@@ -12,8 +12,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "north_bharat_jobs_fresh",
-      "database_id": "REPLACE_WITH_NEW_D1_DATABASE_ID"
+      "database_name": "north-bharat-jobs",
+      "database_id": "a63b98bd-4cc4-4543-bb4a-616eb9a610e5"
     }
   ],
   "triggers": {
