@@ -2,17 +2,23 @@
   North Bharat Jobs
   Official-source monitoring engine
 
-  Responsibilities:
-  - Scan enabled official sources
-  - Verify discovered candidates
-  - Publish only verified candidates
-  - Update existing recruitment records instead of cloning them
-  - Keep revision history only when real data changes
-  - Prevent duplicate records
-  - Handle source failures with retry/circuit-breaker logic
-  - Use two configured portal sources as fallback after daily retry exhaustion
-  - Remove records older than 365 days
-  - Keep D1 workload bounded
+  FLOW
+  ----
+  1. Scan official sources.
+  2. Verify official candidates.
+  3. Publish only when official evidence is complete.
+  4. If notification/apply URL is missing:
+       Official -> Portal 1 -> Portal 2
+  5. Portal information is secondary evidence only.
+  6. Portal data NEVER becomes automatically verified/published.
+  7. If official confirmation is still missing:
+       verification_required + admin notification.
+  8. Existing recruitment is updated in-place.
+  9. No duplicate for a revised notification.
+  10. Real revisions only are stored.
+  11. Temporary official-source failure must NOT destroy
+      an already published record.
+  12. Records older than 365 days are deleted in bounded batches.
 */
 
 import {
@@ -27,68 +33,59 @@ import {
   sha256Hex
 } from './verification.js';
 
+
+/* -------------------------------------------------------------------------- */
+/* Configuration                                                              */
+/* -------------------------------------------------------------------------- */
+
 const RETRY_LIMIT = 20;
 const RETRY_MINUTES = 5;
+
 const RETENTION_DAYS = 365;
 
 const SOURCE_BATCH = 4;
 const CANDIDATE_LIMIT = 8;
 
+const PORTAL_LIMIT = 2;
+
 const RETENTION_DELETE_BATCH = 100;
-const REVISION_MAX_PER_UPDATE = 1;
 
-function iso(d = new Date()) {
-  return d.toISOString();
+
+/* -------------------------------------------------------------------------- */
+/* Time helpers                                                               */
+/* -------------------------------------------------------------------------- */
+
+function iso(date = new Date()) {
+  return date.toISOString();
 }
 
-function dayKey(d = new Date()) {
-  return d.toISOString().slice(0, 10);
+function dayKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
 }
 
-function plusMinutes(d, minutes) {
+function plusMinutes(date, minutes) {
   return new Date(
-    d.getTime() + minutes * 60_000
+    date.getTime() + minutes * 60_000
   ).toISOString();
 }
 
-function plusDays(d, days) {
+function plusDays(date, days) {
   return new Date(
-    d.getTime() + days * 86_400_000
+    date.getTime() + days * 86_400_000
   ).toISOString();
 }
 
-function errorKind(error) {
-  const message = `${error?.message || ''}`.toLowerCase();
-  const status = Number(error?.status || 0);
 
-  if (
-    /captcha|challenge|security check|cloudflare ray id|just a moment/.test(
-      message
-    )
-  ) {
-    return 'security_challenge';
+/* -------------------------------------------------------------------------- */
+/* Generic helpers                                                            */
+/* -------------------------------------------------------------------------- */
+
+function safeJson(value) {
+  try {
+    return JSON.stringify(value ?? null);
+  } catch {
+    return JSON.stringify(null);
   }
-
-  if (status === 404) {
-    return 'not_found';
-  }
-
-  if (status === 401 || status === 403) {
-    return 'access_denied';
-  }
-
-  if (status === 429) {
-    return 'rate_limited';
-  }
-
-  if (
-    status >= 500 ||
-    /fetch-error|timeout|aborted|522|525|network|connection/.test(message)
-  ) {
-    return 'transient';
-  }
-
-  return 'error';
 }
 
 function normalizeComparable(value) {
@@ -118,25 +115,106 @@ function candidateKey(candidate) {
   return canonicalNotificationKey(candidate);
 }
 
-function safeJson(value) {
-  try {
-    return JSON.stringify(value ?? null);
-  } catch {
-    return JSON.stringify(null);
-  }
+function hasUsableUrl(value) {
+  return Boolean(
+    String(value || '').trim()
+  );
 }
 
-/*
-  Reset retry counters at the beginning of a new UTC day.
-*/
-async function resetRetryIfNewDay(db, source, now) {
-  const today = dayKey(now);
+function hasCompleteRecruitmentUrls(candidate) {
+  return Boolean(
+    hasUsableUrl(candidate?.official_url) &&
+    hasUsableUrl(candidate?.notification_url) &&
+    hasUsableUrl(candidate?.apply_url)
+  );
+}
 
-  if (source.retry_day === today) {
+function missingRecruitmentUrls(candidate) {
+  const missing = [];
+
+  if (!hasUsableUrl(candidate?.official_url)) {
+    missing.push('official_url');
+  }
+
+  if (!hasUsableUrl(candidate?.notification_url)) {
+    missing.push('notification_url');
+  }
+
+  if (!hasUsableUrl(candidate?.apply_url)) {
+    missing.push('apply_url');
+  }
+
+  return missing;
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Error classification                                                       */
+/* -------------------------------------------------------------------------- */
+
+function errorKind(error) {
+  const message =
+    `${error?.message || ''}`.toLowerCase();
+
+  const status =
+    Number(error?.status || 0);
+
+  if (
+    /captcha|challenge|security check|cloudflare ray id|just a moment/.test(
+      message
+    )
+  ) {
+    return 'security_challenge';
+  }
+
+  if (status === 404) {
+    return 'not_found';
+  }
+
+  if (
+    status === 401 ||
+    status === 403
+  ) {
+    return 'access_denied';
+  }
+
+  if (status === 429) {
+    return 'rate_limited';
+  }
+
+  if (
+    status >= 500 ||
+    /fetch-error|timeout|aborted|522|525|network|connection/.test(
+      message
+    )
+  ) {
+    return 'transient';
+  }
+
+  return 'error';
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Retry handling                                                             */
+/* -------------------------------------------------------------------------- */
+
+async function resetRetryIfNewDay(
+  db,
+  source,
+  now
+) {
+  const today =
+    dayKey(now);
+
+  if (
+    source.retry_day === today
+  ) {
     return source;
   }
 
-  const nextRetry = iso(now);
+  const nextRetry =
+    iso(now);
 
   await db
     .prepare(`
@@ -149,7 +227,11 @@ async function resetRetryIfNewDay(db, source, now) {
         updated_at=CURRENT_TIMESTAMP
       WHERE id=?
     `)
-    .bind(today, nextRetry, source.id)
+    .bind(
+      today,
+      nextRetry,
+      source.id
+    )
     .run();
 
   return {
@@ -161,59 +243,175 @@ async function resetRetryIfNewDay(db, source, now) {
   };
 }
 
-/*
-  Remove old records in bounded batches.
+async function sourceSuccess(
+  db,
+  source,
+  now
+) {
+  await db
+    .prepare(`
+      UPDATE sources
+      SET
+        retry_day=?,
+        retry_count=0,
+        next_retry_at=?,
+        circuit_until=NULL,
+        last_checked_at=?,
+        last_success_at=?,
+        last_error=NULL,
+        last_error_code=NULL,
+        last_error_type=NULL,
+        updated_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `)
+    .bind(
+      dayKey(now),
+      iso(now),
+      iso(now),
+      iso(now),
+      source.id
+    )
+    .run();
+}
 
-  Important:
-  - item_revisions -> ON DELETE CASCADE
-  - verification_events -> ON DELETE SET NULL
-  - notifications -> ON DELETE SET NULL
-
-  Therefore deleting the item is safe with the current schema.
-*/
-async function purgeExpiredItems(db, now) {
-  const cutoff = new Date(
-    now.getTime() - RETENTION_DAYS * 86_400_000
-  ).toISOString();
-
-  let deleted = 0;
-
-  for (;;) {
-    const rows = await db
-      .prepare(`
-        SELECT id
-        FROM items
-        WHERE COALESCE(published_at, created_at) < ?
-        LIMIT ?
-      `)
-      .bind(cutoff, RETENTION_DELETE_BATCH)
-      .all();
-
-    const ids = (rows.results || [])
-      .map(row => Number(row.id))
-      .filter(Number.isInteger);
-
-    if (!ids.length) {
-      break;
-    }
-
-    const statements = ids.map(id =>
-      db
-        .prepare(`DELETE FROM items WHERE id=?`)
-        .bind(id)
+async function sourceFailure(
+  db,
+  source,
+  error,
+  now
+) {
+  const current =
+    await resetRetryIfNewDay(
+      db,
+      source,
+      now
     );
 
-    await db.batch(statements);
+  const kind =
+    errorKind(error);
 
-    deleted += ids.length;
+  const status =
+    Number(error?.status || 0) || null;
 
-    if (ids.length < RETENTION_DELETE_BATCH) {
-      break;
-    }
+  const retryCount =
+    Number(current.retry_count || 0) + 1;
+
+  let nextRetry =
+    plusMinutes(
+      now,
+      RETRY_MINUTES
+    );
+
+  let circuitUntil =
+    null;
+
+  if (
+    kind === 'security_challenge'
+  ) {
+    nextRetry =
+      plusDays(now, 1);
+
+    circuitUntil =
+      nextRetry;
   }
 
-  return deleted;
+  else if (
+    kind === 'not_found'
+  ) {
+    nextRetry =
+      plusDays(now, 1);
+
+    circuitUntil =
+      nextRetry;
+  }
+
+  else if (
+    kind === 'access_denied' &&
+    retryCount < 3
+  ) {
+    nextRetry =
+      plusMinutes(now, 60);
+  }
+
+  else if (
+    kind === 'access_denied'
+  ) {
+    nextRetry =
+      plusDays(now, 1);
+
+    circuitUntil =
+      nextRetry;
+  }
+
+  else if (
+    kind === 'rate_limited'
+  ) {
+    const retryAfter =
+      Number(
+        error?.retryAfter || 0
+      );
+
+    nextRetry =
+      retryAfter > 0
+        ? new Date(
+            now.getTime() +
+            retryAfter * 1000
+          ).toISOString()
+        : plusMinutes(now, 10);
+  }
+
+  if (
+    retryCount >= RETRY_LIMIT
+  ) {
+    nextRetry =
+      plusDays(now, 1);
+
+    circuitUntil =
+      nextRetry;
+  }
+
+  await db
+    .prepare(`
+      UPDATE sources
+      SET
+        retry_day=?,
+        retry_count=?,
+        next_retry_at=?,
+        circuit_until=?,
+        last_checked_at=?,
+        last_error=?,
+        last_error_code=?,
+        last_error_type=?,
+        updated_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `)
+    .bind(
+      dayKey(now),
+      retryCount,
+      nextRetry,
+      circuitUntil,
+      iso(now),
+      String(
+        error?.message || error
+      ),
+      status,
+      kind,
+      source.id
+    )
+    .run();
+
+  return {
+    count: retryCount,
+    kind,
+    next: nextRetry,
+    circuit: circuitUntil
+  };
 }
+
+
+/* -------------------------------------------------------------------------- */
+/* Database events / admin notifications                                      */
+/* -------------------------------------------------------------------------- */
 
 async function recordEvent(
   db,
@@ -244,7 +442,9 @@ async function recordEvent(
       eventType,
       severity,
       message,
-      evidence ? safeJson(evidence) : null
+      evidence
+        ? safeJson(evidence)
+        : null
     )
     .run();
 }
@@ -275,147 +475,264 @@ async function notify(
     .run();
 }
 
-/*
-  Mark source as successful.
 
-  next_retry_at is deliberately set to current time.
-  The main scheduler uses last_checked_at to rotate through
-  sources fairly.
-*/
-async function sourceSuccess(db, source, now) {
-  await db
-    .prepare(`
-      UPDATE sources
-      SET
-        retry_day=?,
-        retry_count=0,
-        next_retry_at=?,
-        circuit_until=NULL,
-        last_checked_at=?,
-        last_success_at=?,
-        last_error=NULL,
-        last_error_code=NULL,
-        last_error_type=NULL,
-        updated_at=CURRENT_TIMESTAMP
-      WHERE id=?
-    `)
-    .bind(
-      dayKey(now),
-      iso(now),
-      iso(now),
-      iso(now),
-      source.id
-    )
-    .run();
-}
+/* -------------------------------------------------------------------------- */
+/* Retention                                                                 */
+/* -------------------------------------------------------------------------- */
 
-/*
-  Handle official-source failure.
-*/
-async function sourceFailure(
+async function purgeExpiredItems(
   db,
-  source,
-  error,
   now
 ) {
-  const current = await resetRetryIfNewDay(
-    db,
-    source,
-    now
-  );
+  const cutoff =
+    new Date(
+      now.getTime() -
+      RETENTION_DAYS * 86_400_000
+    ).toISOString();
 
-  const kind = errorKind(error);
-  const status = Number(error?.status || 0) || null;
+  let deleted = 0;
 
-  let retryCount =
-    Number(current.retry_count || 0) + 1;
+  for (;;) {
+    const rows =
+      await db
+        .prepare(`
+          SELECT id
+          FROM items
+          WHERE
+            COALESCE(
+              published_at,
+              created_at
+            ) < ?
+          LIMIT ?
+        `)
+        .bind(
+          cutoff,
+          RETENTION_DELETE_BATCH
+        )
+        .all();
 
-  let nextRetry = plusMinutes(
-    now,
-    RETRY_MINUTES
-  );
+    const ids =
+      (rows.results || [])
+        .map(row =>
+          Number(row.id)
+        )
+        .filter(
+          Number.isInteger
+        );
 
-  let circuitUntil = null;
+    if (!ids.length) {
+      break;
+    }
 
-  if (kind === 'security_challenge') {
-    nextRetry = plusDays(now, 1);
-    circuitUntil = nextRetry;
+    await db.batch(
+      ids.map(id =>
+        db
+          .prepare(
+            `DELETE FROM items WHERE id=?`
+          )
+          .bind(id)
+      )
+    );
+
+    deleted +=
+      ids.length;
+
+    if (
+      ids.length <
+      RETENTION_DELETE_BATCH
+    ) {
+      break;
+    }
   }
 
-  else if (kind === 'not_found') {
-    nextRetry = plusDays(now, 1);
-    circuitUntil = nextRetry;
-  }
-
-  else if (
-    kind === 'access_denied' &&
-    retryCount < 3
-  ) {
-    nextRetry = plusMinutes(now, 60);
-  }
-
-  else if (kind === 'access_denied') {
-    nextRetry = plusDays(now, 1);
-    circuitUntil = nextRetry;
-  }
-
-  else if (kind === 'rate_limited') {
-    const retryAfter =
-      Number(error?.retryAfter || 0);
-
-    nextRetry =
-      retryAfter > 0
-        ? new Date(
-            now.getTime() +
-            retryAfter * 1000
-          ).toISOString()
-        : plusMinutes(now, 10);
-  }
-
-  if (retryCount >= RETRY_LIMIT) {
-    nextRetry = plusDays(now, 1);
-    circuitUntil = nextRetry;
-  }
-
-  await db
-    .prepare(`
-      UPDATE sources
-      SET
-        retry_day=?,
-        retry_count=?,
-        next_retry_at=?,
-        circuit_until=?,
-        last_checked_at=?,
-        last_error=?,
-        last_error_code=?,
-        last_error_type=?,
-        updated_at=CURRENT_TIMESTAMP
-      WHERE id=?
-    `)
-    .bind(
-      dayKey(now),
-      retryCount,
-      nextRetry,
-      circuitUntil,
-      iso(now),
-      String(error?.message || error),
-      status,
-      kind,
-      source.id
-    )
-    .run();
-
-  return {
-    count: retryCount,
-    kind,
-    next: nextRetry,
-    circuit: circuitUntil
-  };
+  return deleted;
 }
 
+
+/* -------------------------------------------------------------------------- */
+/* Existing item lookup                                                       */
+/* -------------------------------------------------------------------------- */
+
+async function findExistingItem(
+  db,
+  candidate,
+  key
+) {
+  if (key) {
+    const row =
+      await db
+        .prepare(`
+          SELECT *
+          FROM items
+          WHERE notification_key=?
+          ORDER BY id
+          LIMIT 1
+        `)
+        .bind(key)
+        .first();
+
+    if (row) {
+      return row;
+    }
+  }
+
+  const canonical =
+    candidate?.canonical_url ||
+    null;
+
+  if (canonical) {
+    const row =
+      await db
+        .prepare(`
+          SELECT *
+          FROM items
+          WHERE canonical_url=?
+          ORDER BY id
+          LIMIT 1
+        `)
+        .bind(canonical)
+        .first();
+
+    if (row) {
+      return row;
+    }
+  }
+
+  const sourceUrl =
+    candidate?.source_url ||
+    null;
+
+  if (sourceUrl) {
+    const row =
+      await db
+        .prepare(`
+          SELECT *
+          FROM items
+          WHERE source_url=?
+          ORDER BY id
+          LIMIT 1
+        `)
+        .bind(sourceUrl)
+        .first();
+
+    if (row) {
+      return row;
+    }
+  }
+
+  return null;
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Recruitment matching                                                      */
+/* -------------------------------------------------------------------------- */
+
 /*
-  Build the database field set for an official candidate.
+  Portal candidate does not necessarily have the same
+  notification_key because its source_id is different.
+
+  Therefore we also compare the actual recruitment identity.
 */
+
+function titleSimilarity(a, b) {
+  const x =
+    normalizeComparable(a);
+
+  const y =
+    normalizeComparable(b);
+
+  if (!x || !y) {
+    return false;
+  }
+
+  if (x === y) {
+    return true;
+  }
+
+  if (
+    x.includes(y) ||
+    y.includes(x)
+  ) {
+    return true;
+  }
+
+  const ax =
+    new Set(
+      x.split(/\W+/)
+        .filter(Boolean)
+    );
+
+  const by =
+    new Set(
+      y.split(/\W+/)
+        .filter(Boolean)
+    );
+
+  if (
+    ax.size < 3 ||
+    by.size < 3
+  ) {
+    return false;
+  }
+
+  let common = 0;
+
+  for (const word of ax) {
+    if (by.has(word)) {
+      common++;
+    }
+  }
+
+  const ratio =
+    common /
+    Math.max(
+      ax.size,
+      by.size
+    );
+
+  return ratio >= 0.70;
+}
+
+function sameRecruitment(
+  officialCandidate,
+  portalCandidate
+) {
+  if (
+    titleSimilarity(
+      officialCandidate?.title,
+      portalCandidate?.title
+    )
+  ) {
+    return true;
+  }
+
+  const officialKey =
+    normalizeComparable(
+      officialCandidate?.notification_key
+    );
+
+  const portalKey =
+    normalizeComparable(
+      portalCandidate?.notification_key
+    );
+
+  if (
+    officialKey &&
+    portalKey &&
+    officialKey === portalKey
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Official candidate fields                                                  */
+/* -------------------------------------------------------------------------- */
+
 function buildOfficialFields(
   candidate,
   verification,
@@ -425,16 +742,43 @@ function buildOfficialFields(
   hash
 ) {
   const verified =
-    verification.ok &&
-    Number(verification.confidence || 0) >= 85;
+    verification?.ok === true &&
+    Number(
+      verification?.confidence || 0
+    ) >= 85 &&
+    hasCompleteRecruitmentUrls(
+      candidate
+    );
+
+  /*
+    IMPORTANT:
+    If an existing item was already published
+    and a temporary scan loses one URL, do not
+    erase the good published data.
+
+    The item remains published until an actual
+    confirmed change is available.
+  */
+  const existingPublished =
+    existing?.status === 'published';
 
   const status =
     verified
       ? 'published'
-      : 'verification_required';
+      : existingPublished
+        ? 'published'
+        : 'verification_required';
+
+  const verificationStatus =
+    verified
+      ? 'verified'
+      : existingPublished
+        ? 'verified'
+        : 'verification_required';
 
   return {
-    notification_key: candidateKey(candidate),
+    notification_key:
+      candidateKey(candidate),
 
     type:
       candidate.type || 'update',
@@ -493,17 +837,28 @@ function buildOfficialFields(
     important_dates:
       candidate.important_dates || null,
 
+    /*
+      Never replace a valid existing URL with NULL
+      during an incomplete scan.
+    */
     official_url:
-      candidate.official_url || null,
+      candidate.official_url ||
+      existing?.official_url ||
+      null,
 
     apply_url:
-      candidate.apply_url || null,
+      candidate.apply_url ||
+      existing?.apply_url ||
+      null,
 
     notification_url:
-      candidate.notification_url || null,
+      candidate.notification_url ||
+      existing?.notification_url ||
+      null,
 
     source_url:
-      candidate.source_url,
+      candidate.source_url ||
+      existing?.source_url,
 
     source_name:
       source.name,
@@ -516,37 +871,60 @@ function buildOfficialFields(
 
     canonical_url:
       candidate.canonical_url ||
-      candidate.source_url,
+      candidate.source_url ||
+      existing?.canonical_url ||
+      null,
 
     status,
 
     verification_status:
-      verified
-        ? 'verified'
-        : 'verification_required',
+      verificationStatus,
 
     confidence_score:
-      Number(verification.confidence || 0),
+      verified
+        ? Number(
+            verification.confidence || 0
+          )
+        : existingPublished
+          ? Number(
+              existing.confidence_score || 0
+            )
+          : Number(
+              verification?.confidence || 0
+            ),
 
     evidence_json:
       safeJson({
-        errors: verification.errors || [],
-        warnings: verification.warnings || [],
-        authority: 'official'
+        authority:
+          'official',
+
+        errors:
+          verification?.errors || [],
+
+        warnings:
+          verification?.warnings || [],
+
+        source_evidence:
+          candidate?._evidence || [],
+
+        source_evidence_score:
+          candidate?._evidence_score || 0,
+
+        missing_urls:
+          missingRecruitmentUrls(
+            candidate
+          )
       }),
 
     last_verified_at:
       verified
         ? iso(now)
-        : null,
+        : existing?.last_verified_at ||
+          null,
 
     last_seen_at:
       iso(now),
 
-    /*
-      Never reset the original publication date
-      when an existing item is updated.
-    */
     published_at:
       existing?.published_at ||
       (
@@ -557,109 +935,31 @@ function buildOfficialFields(
   };
 }
 
-/*
-  Find an existing item using stable identity.
 
-  Priority:
-  1. notification_key
-  2. canonical_url
-  3. source_url
+/* -------------------------------------------------------------------------- */
+/* Changed field detection                                                    */
+/* -------------------------------------------------------------------------- */
 
-  This is important because a changed PDF URL should not
-  automatically create a second recruitment record when the
-  canonical recruitment page remains the same.
-*/
-async function findExistingItem(
-  db,
-  candidate,
-  key
-) {
-  const canonical =
-    candidate.canonical_url ||
-    candidate.source_url ||
-    null;
-
-  const sourceUrl =
-    candidate.source_url ||
-    null;
-
-  if (key) {
-    const byKey = await db
-      .prepare(`
-        SELECT *
-        FROM items
-        WHERE notification_key=?
-        ORDER BY id
-        LIMIT 1
-      `)
-      .bind(key)
-      .first();
-
-    if (byKey) {
-      return byKey;
-    }
-  }
-
-  if (canonical) {
-    const byCanonical = await db
-      .prepare(`
-        SELECT *
-        FROM items
-        WHERE canonical_url=?
-        ORDER BY id
-        LIMIT 1
-      `)
-      .bind(canonical)
-      .first();
-
-    if (byCanonical) {
-      return byCanonical;
-    }
-  }
-
-  if (sourceUrl) {
-    const bySource = await db
-      .prepare(`
-        SELECT *
-        FROM items
-        WHERE source_url=?
-        ORDER BY id
-        LIMIT 1
-      `)
-      .bind(sourceUrl)
-      .first();
-
-    if (bySource) {
-      return bySource;
-    }
-  }
-
-  return null;
-}
-
-/*
-  Compare database fields with candidate fields.
-*/
 function getChangedFields(
   existing,
   fields
 ) {
-  return Object.keys(fields).filter(
-    field =>
-      String(existing[field] ?? '') !==
-      String(fields[field] ?? '')
-  );
+  return Object.keys(fields)
+    .filter(field =>
+      String(
+        existing[field] ?? ''
+      ) !==
+      String(
+        fields[field] ?? ''
+      )
+    );
 }
 
-/*
-  Upsert an official-source candidate.
 
-  Critical behavior:
-  - Existing record keeps the same ID.
-  - No new slug is generated for an existing record.
-  - Revision is created only when real fields changed.
-  - No revision is created on an identical scan.
-*/
+/* -------------------------------------------------------------------------- */
+/* Official upsert                                                            */
+/* -------------------------------------------------------------------------- */
+
 async function upsertOfficial(
   db,
   candidate,
@@ -667,7 +967,8 @@ async function upsertOfficial(
   source,
   now
 ) {
-  const key = candidateKey(candidate);
+  const key =
+    candidateKey(candidate);
 
   if (!key) {
     return {
@@ -704,7 +1005,7 @@ async function upsertOfficial(
     );
 
   /*
-    Existing item
+    Existing item.
   */
   if (existing) {
     const changedFields =
@@ -713,12 +1014,9 @@ async function upsertOfficial(
         fields
       );
 
-    /*
-      Nothing actually changed.
-      Only update last_seen_at and updated_at.
-      Do NOT create a revision.
-    */
-    if (changedFields.length === 0) {
+    if (
+      changedFields.length === 0
+    ) {
       await db
         .prepare(`
           UPDATE items
@@ -739,7 +1037,8 @@ async function upsertOfficial(
         updated: false,
         changed: false,
         published:
-          existing.status === 'published',
+          existing.status ===
+          'published',
         verificationRequired:
           existing.status ===
           'verification_required',
@@ -747,9 +1046,6 @@ async function upsertOfficial(
       };
     }
 
-    /*
-      Record exactly one revision for this scan.
-    */
     const revisionRow =
       await db
         .prepare(`
@@ -769,12 +1065,6 @@ async function upsertOfficial(
         revisionRow?.next_revision || 1
       );
 
-    const revision =
-      Math.max(
-        1,
-        revisionNo
-      );
-
     await db
       .prepare(`
         INSERT INTO item_revisions(
@@ -787,7 +1077,7 @@ async function upsertOfficial(
       `)
       .bind(
         existing.id,
-        revision,
+        revisionNo,
         safeJson(changedFields),
         safeJson(fields)
       )
@@ -795,7 +1085,10 @@ async function upsertOfficial(
 
     const assignments =
       Object.keys(fields)
-        .map(field => `${field}=?`)
+        .map(
+          field =>
+            `${field}=?`
+        )
         .join(',');
 
     await db
@@ -812,19 +1105,14 @@ async function upsertOfficial(
       )
       .run();
 
-    const wasPublished =
-      existing.status === 'published';
-
-    const isPublished =
-      fields.status === 'published';
-
     return {
       id: existing.id,
       created: false,
       updated: true,
       changed: true,
       published:
-        !wasPublished && isPublished,
+        fields.status ===
+        'published',
       verificationRequired:
         fields.status ===
         'verification_required',
@@ -844,7 +1132,9 @@ async function upsertOfficial(
     Object.keys(fields);
 
   const placeholders =
-    columns.map(() => '?').join(',');
+    columns
+      .map(() => '?')
+      .join(',');
 
   const result =
     await db
@@ -869,7 +1159,8 @@ async function upsertOfficial(
       .run();
 
   const id =
-    result.meta?.last_row_id || null;
+    result.meta?.last_row_id ||
+    null;
 
   return {
     id,
@@ -877,7 +1168,8 @@ async function upsertOfficial(
     updated: false,
     changed: true,
     published:
-      fields.status === 'published',
+      fields.status ===
+      'published',
     verificationRequired:
       fields.status ===
       'verification_required',
@@ -885,281 +1177,16 @@ async function upsertOfficial(
   };
 }
 
-/*
-  Process one official source.
-*/
-async function runOfficial(
+
+/* -------------------------------------------------------------------------- */
+/* Portal source selection                                                    */
+/* -------------------------------------------------------------------------- */
+
+async function getPortalSources(
   db,
-  source,
-  now,
-  stats
+  official
 ) {
-  const sourceFresh =
-    await resetRetryIfNewDay(
-      db,
-      source,
-      now
-    );
-
-  /*
-    Circuit breaker.
-  */
-  if (
-    sourceFresh.circuit_until &&
-    new Date(
-      sourceFresh.circuit_until
-    ) > now
-  ) {
-    return;
-  }
-
-  /*
-    Retry delay.
-  */
-  if (
-    sourceFresh.next_retry_at &&
-    new Date(
-      sourceFresh.next_retry_at
-    ) > now
-  ) {
-    return;
-  }
-
-  /*
-    Daily retry limit.
-  */
-  if (
-    Number(sourceFresh.retry_count || 0) >=
-    RETRY_LIMIT
-  ) {
-    return;
-  }
-
-  try {
-    const candidates =
-      await discoverFromSource(
-        sourceFresh
-      );
-
-    const limited =
-      (candidates || []).slice(
-        0,
-        CANDIDATE_LIMIT
-      );
-
-    for (const candidate of limited) {
-      stats.discovered++;
-
-      let verification;
-
-      try {
-        verification =
-          await verifyCandidate(
-            candidate,
-            sourceFresh
-          );
-      } catch (error) {
-        stats.errors++;
-
-        await recordEvent(
-          db,
-          {
-            sourceId: sourceFresh.id,
-            eventType:
-              'candidate_verification_error',
-            severity: 'error',
-            message:
-              `Candidate verification failed: ${
-                error?.message || error
-              }`,
-            evidence: {
-              title:
-                candidate?.title || null,
-              source:
-                sourceFresh.name
-            }
-          }
-        );
-
-        continue;
-      }
-
-      /*
-        Invalid candidate is not allowed to
-        become a public job.
-      */
-      if (
-        !verification ||
-        verification.ok !== true ||
-        Number(
-          verification.confidence || 0
-        ) < 85
-      ) {
-        stats.blocked++;
-
-        /*
-          We still store a verification_required
-          item only if it has a valid stable key.
-        */
-      }
-
-      const result =
-        await upsertOfficial(
-          db,
-          candidate,
-          verification,
-          sourceFresh,
-          now
-        );
-
-      if (result.blocked) {
-        stats.blocked++;
-
-        await recordEvent(
-          db,
-          {
-            sourceId: sourceFresh.id,
-            eventType:
-              'candidate_blocked',
-            severity: 'warning',
-            message:
-              'Candidate did not have a valid stable notification identity.',
-            evidence: {
-              title:
-                candidate?.title || null
-            }
-          }
-        );
-
-        continue;
-      }
-
-      if (result.published) {
-        stats.published++;
-      }
-
-      if (result.updated) {
-        stats.updated++;
-      }
-
-      if (result.verificationRequired) {
-        stats.verificationRequired++;
-
-        await recordEvent(
-          db,
-          {
-            itemId: result.id,
-            sourceId: sourceFresh.id,
-            eventType:
-              'verification_required',
-            severity: 'warning',
-            message:
-              'Automatic official-source verification incomplete.',
-            evidence: {
-              errors:
-                verification.errors || [],
-              warnings:
-                verification.warnings || [],
-              confidence:
-                verification.confidence || 0
-            }
-          }
-        );
-
-        /*
-          Avoid notification spam for every
-          identical scan. A notification is
-          generated only when this scan created
-          or changed the verification state.
-        */
-        if (
-          result.created ||
-          result.changed
-        ) {
-          await notify(
-            db,
-            'verification_required',
-            'Verification required',
-            `Review: ${candidate.title}`,
-            result.id
-          );
-        }
-      }
-    }
-
-    await sourceSuccess(
-      db,
-      sourceFresh,
-      now
-    );
-
-  } catch (error) {
-    stats.errors++;
-
-    const failure =
-      await sourceFailure(
-        db,
-        sourceFresh,
-        error,
-        now
-      );
-
-    await recordEvent(
-      db,
-      {
-        sourceId: sourceFresh.id,
-        eventType:
-          'source_error',
-        severity: 'error',
-        message:
-          `${failure.kind}: ${
-            error?.message || error
-          }`,
-        evidence: {
-          retry_count:
-            failure.count,
-          next_retry_at:
-            failure.next,
-          circuit_until:
-            failure.circuit
-        }
-      }
-    );
-
-    /*
-      Portal fallback is attempted only
-      after the official source reaches
-      the daily retry limit.
-    */
-    if (
-      failure.count >= RETRY_LIMIT
-    ) {
-      await runPortalsForFallback(
-        db,
-        sourceFresh,
-        now,
-        stats
-      );
-    }
-  }
-}
-
-/*
-  Portal fallback.
-
-  Two independent enabled portal sources
-  must discover the same recruitment.
-
-  Portal-only data is NEVER published
-  automatically.
-*/
-async function runPortalsForFallback(
-  db,
-  official,
-  now,
-  stats
-) {
-  const portalRows =
+  const result =
     await db
       .prepare(`
         SELECT *
@@ -1171,41 +1198,125 @@ async function runPortalsForFallback(
             fallback_key=?
             OR fallback_key='*'
           )
-        ORDER BY priority ASC, id ASC
-        LIMIT 2
+        ORDER BY
+          priority ASC,
+          id ASC
+        LIMIT ?
       `)
       .bind(
-        official.fallback_key
+        official?.fallback_key || '*',
+        PORTAL_LIMIT
       )
       .all();
 
-  const portals =
-    portalRows.results || [];
+  return (
+    result.results || []
+  );
+}
 
-  if (portals.length < 2) {
-    await notify(
-      db,
-      'configuration',
-      'Portal fallback not configured',
-      `Official source ${official.name} reached its daily retry limit. Configure two enabled portal sources for fallback_key=${official.fallback_key}.`
+
+/* -------------------------------------------------------------------------- */
+/* Portal fallback for one missing-URL candidate                              */
+/* -------------------------------------------------------------------------- */
+
+async function portalFallbackForCandidate(
+  db,
+  officialSource,
+  officialCandidate,
+  officialVerification,
+  existing,
+  now,
+  stats
+) {
+  const missing =
+    missingRecruitmentUrls(
+      officialCandidate
     );
 
-    return;
+  if (!missing.length) {
+    return false;
   }
 
-  const found = [];
+  const portals =
+    await getPortalSources(
+      db,
+      officialSource
+    );
 
-  for (const portal of portals) {
+  /*
+    No two configured portals:
+    Admin must be told.
+  */
+  if (
+    portals.length < 2
+  ) {
+    await notify(
+      db,
+      'missing_url',
+      'Admin action required: fallback portals not configured',
+      `${officialCandidate.title}: missing ${missing.join(', ')}. Enable and configure Portal 1 and Portal 2.`,
+      existing?.id || null
+    );
+
+    await recordEvent(
+      db,
+      {
+        itemId:
+          existing?.id || null,
+
+        sourceId:
+          officialSource.id,
+
+        eventType:
+          'fallback_not_configured',
+
+        severity:
+          'warning',
+
+        message:
+          `Missing ${missing.join(', ')} and two portal sources are not enabled.`,
+
+        evidence: {
+          missing,
+          portals_found:
+            portals.length
+        }
+      }
+    );
+
+    return false;
+  }
+
+  const portalResults = [];
+
+  /*
+    Ask BOTH portals.
+  */
+  for (
+    const portal of portals
+  ) {
     try {
       const candidates =
         await discoverPortal(
           portal
         );
 
-      found.push({
+      const matches =
+        (candidates || [])
+          .filter(candidate =>
+            sameRecruitment(
+              officialCandidate,
+              candidate
+            )
+          )
+          .slice(
+            0,
+            CANDIDATE_LIMIT
+          );
+
+      portalResults.push({
         portal,
-        candidates:
-          candidates || []
+        matches
       });
 
     } catch (error) {
@@ -1214,10 +1325,15 @@ async function runPortalsForFallback(
       await recordEvent(
         db,
         {
-          sourceId: portal.id,
+          sourceId:
+            portal.id,
+
           eventType:
             'portal_error',
-          severity: 'warning',
+
+          severity:
+            'warning',
+
           message:
             `${portal.name}: ${
               error?.message || error
@@ -1227,158 +1343,322 @@ async function runPortalsForFallback(
     }
   }
 
+  const first =
+    portalResults[0];
+
+  const second =
+    portalResults[1];
+
+  const firstCandidate =
+    first?.matches?.[0] ||
+    null;
+
+  const secondCandidate =
+    second?.matches?.[0] ||
+    null;
+
   /*
-    Group portal candidates by stable identity.
+    Both portals must independently find
+    the same recruitment before portal
+    information is considered a strong
+    secondary cross-check.
   */
-  const grouped =
-    new Map();
+  if (
+    !firstCandidate ||
+    !secondCandidate
+  ) {
+    await notify(
+      db,
+      'missing_url',
+      'Admin action required: recruitment URL missing',
+      `${officialCandidate.title}: missing ${missing.join(', ')}. Portal 1/2 could not both confirm the missing information.`,
+      existing?.id || null
+    );
 
-  for (const group of found) {
-    for (
-      const candidate of
-      group.candidates.slice(
-        0,
-        CANDIDATE_LIMIT
-      )
-    ) {
-      const key =
-        candidateKey(candidate);
+    await recordEvent(
+      db,
+      {
+        itemId:
+          existing?.id || null,
 
-      if (!key) {
-        continue;
+        sourceId:
+          officialSource.id,
+
+        eventType:
+          'portal_fallback_incomplete',
+
+        severity:
+          'warning',
+
+        message:
+          `Portal fallback could not completely recover: ${missing.join(', ')}`,
+
+        evidence: {
+          missing,
+          portal1_found:
+            Boolean(firstCandidate),
+          portal2_found:
+            Boolean(secondCandidate)
+        }
       }
+    );
 
-      const list =
-        grouped.get(key) || [];
-
-      list.push({
-        ...candidate,
-        _portal:
-          group.portal.name
-      });
-
-      grouped.set(
-        key,
-        list
-      );
-    }
+    return false;
   }
 
+  /*
+    Compare the two portals.
+  */
+  const portalAgreement =
+    comparable(
+      firstCandidate
+    ) ===
+    comparable(
+      secondCandidate
+    );
+
+  /*
+    Extract only missing values.
+    Existing official values are never replaced
+    by null.
+  */
+  const recovered = {};
+
   for (
-    const [key, candidates]
-    of grouped
+    const field of [
+      'notification_url',
+      'apply_url',
+      'last_date',
+      'application_start',
+      'exam_date',
+      'vacancies',
+      'qualification',
+      'eligibility',
+      'fee',
+      'selection_process',
+      'salary'
+    ]
   ) {
-    const firstPortal =
-      portals[0];
+    const officialValue =
+      officialCandidate[field];
 
-    const secondPortal =
-      portals[1];
-
-    const fromFirst =
-      candidates.find(
-        candidate =>
-          candidate._portal ===
-          firstPortal.name
-      );
-
-    const fromSecond =
-      candidates.find(
-        candidate =>
-          candidate._portal ===
-          secondPortal.name
-      );
-
-    /*
-      Both portals must contain the same
-      stable recruitment identity.
-    */
     if (
-      !fromFirst ||
-      !fromSecond
+      hasUsableUrl(
+        officialValue
+      ) ||
+      (
+        existing &&
+        hasUsableUrl(
+          existing[field]
+        )
+      )
     ) {
       continue;
     }
 
-    const same =
-      comparable(fromFirst) ===
-      comparable(fromSecond);
+    const firstValue =
+      firstCandidate[field];
 
-    const merged = {
-      ...fromFirst,
+    const secondValue =
+      secondCandidate[field];
 
-      /*
-        Portal-only data must never pretend
-        to be an official source.
-      */
-      official_url:
-        null,
+    if (
+      hasUsableUrl(
+        firstValue
+      ) &&
+      hasUsableUrl(
+        secondValue
+      ) &&
+      normalizeComparable(
+        firstValue
+      ) ===
+      normalizeComparable(
+        secondValue
+      )
+    ) {
+      recovered[field] =
+        firstValue;
+    }
+  }
 
-      source_name:
-        `${firstPortal.name} + ${secondPortal.name}`,
+  /*
+    Portal data can help prepare a candidate,
+    but official verification remains required.
+  */
+  const recoveredCandidate = {
+    ...officialCandidate,
+    ...recovered
+  };
 
-      source_id:
-        null,
+  const recoveredMissing =
+    missingRecruitmentUrls(
+      recoveredCandidate
+    );
 
-      source_url:
-        fromFirst.source_url
-    };
+  const evidence = {
+    authority:
+      'secondary_only',
 
-    const existing =
-      await findExistingItem(
-        db,
-        merged,
-        key
+    official_source:
+      officialSource.name,
+
+    portals: [
+      first.portal.name,
+      second.portal.name
+    ],
+
+    portal_agreement:
+      portalAgreement,
+
+    recovered,
+
+    still_missing:
+      recoveredMissing
+  };
+
+  /*
+    We NEVER mark this as verified merely
+    because two portals agree.
+  */
+  const target =
+    existing ||
+    await findExistingItem(
+      db,
+      officialCandidate,
+      candidateKey(
+        officialCandidate
+      )
+    );
+
+  if (target) {
+    /*
+      Only fill fields that are currently
+      missing. Never overwrite an official
+      value with portal data.
+    */
+    const updates = [];
+
+    const values = [];
+
+    for (
+      const [field, value]
+      of Object.entries(recovered)
+    ) {
+      if (
+        !hasUsableUrl(value)
+      ) {
+        continue;
+      }
+
+      if (
+        hasUsableUrl(
+          target[field]
+        )
+      ) {
+        continue;
+      }
+
+      updates.push(
+        `${field}=?`
       );
 
-    const confidence =
-      same ? 65 : 35;
+      values.push(value);
+    }
 
-    const evidence =
-      {
-        authority:
-          'secondary_only',
+    /*
+      Evidence status.
+    */
+    updates.push(
+      `evidence_json=?`
+    );
 
-        portals: [
-          firstPortal.name,
-          secondPortal.name
-        ],
+    values.push(
+      safeJson(evidence)
+    );
 
-        consistent:
-          same
-      };
+    updates.push(
+      `last_seen_at=?`
+    );
 
-    if (existing) {
-      await db
-        .prepare(`
-          UPDATE items
-          SET
-            status='verification_required',
-            verification_status='secondary_crosscheck',
-            confidence_score=?,
-            evidence_json=?,
-            last_seen_at=?,
-            updated_at=CURRENT_TIMESTAMP
-          WHERE id=?
-        `)
-        .bind(
-          confidence,
-          safeJson(evidence),
-          iso(now),
-          existing.id
-        )
-        .run();
+    values.push(
+      iso(now)
+    );
 
-    } else {
+    /*
+      Portal recovery NEVER changes a
+      published record to verification_required.
+      Existing published data remains public.
+    */
+    if (
+      target.status !==
+      'published'
+    ) {
+      updates.push(
+        `status=?`
+      );
+
+      values.push(
+        'verification_required'
+      );
+
+      updates.push(
+        `verification_status=?`
+      );
+
+      values.push(
+        'secondary_crosscheck'
+      );
+
+      updates.push(
+        `confidence_score=?`
+      );
+
+      values.push(
+        portalAgreement
+          ? 65
+          : 50
+      );
+    }
+
+    values.push(
+      target.id
+    );
+
+    await db
+      .prepare(`
+        UPDATE items
+        SET
+          ${updates.join(',')},
+          updated_at=CURRENT_TIMESTAMP
+        WHERE id=?
+      `)
+      .bind(
+        ...values
+      )
+      .run();
+
+  } else {
+    /*
+      No official item exists yet.
+      Create only a verification_required
+      secondary record.
+    */
+    const key =
+      candidateKey(
+        officialCandidate
+      );
+
+    if (key) {
       const slug =
         `${slugify(
-          merged.title
+          officialCandidate.title
         )}-${(
           await sha256Hex(key)
         ).slice(0, 8)}`;
 
       await db
         .prepare(`
-          INSERT INTO items(
+          INSERT OR IGNORE INTO items(
             slug,
             notification_key,
             type,
@@ -1401,74 +1681,777 @@ async function runPortalsForFallback(
             notification_url,
             source_url,
             source_name,
+            source_id,
+            canonical_url,
             status,
             verification_status,
             confidence_score,
             evidence_json,
-            last_seen_at,
-            created_at,
-            updated_at
+            last_seen_at
           )
           VALUES(
-            ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-            CURRENT_TIMESTAMP,
-            CURRENT_TIMESTAMP
+            ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
           )
         `)
         .bind(
           slug,
           key,
-          merged.type || 'job',
-          merged.title,
-          merged.organization || null,
-          merged.category || null,
-          merged.location || null,
-          merged.description || null,
-          merged.qualification || null,
-          merged.vacancies || null,
-          merged.age_limit || null,
-          merged.fee || null,
-          merged.selection_process || null,
-          merged.salary || null,
-          merged.application_start || null,
-          merged.last_date || null,
-          merged.exam_date || null,
-          null,
-          merged.apply_url || null,
-          merged.notification_url || null,
-          merged.source_url,
-          merged.source_name,
+          officialCandidate.type || 'job',
+          officialCandidate.title,
+          officialCandidate.organization || null,
+          officialCandidate.category || null,
+          officialCandidate.location || null,
+          officialCandidate.description || null,
+          recoveredCandidate.qualification || null,
+          recoveredCandidate.vacancies || null,
+          recoveredCandidate.age_limit || null,
+          recoveredCandidate.fee || null,
+          recoveredCandidate.selection_process || null,
+          recoveredCandidate.salary || null,
+          recoveredCandidate.application_start || null,
+          recoveredCandidate.last_date || null,
+          recoveredCandidate.exam_date || null,
+          officialCandidate.official_url || null,
+          recoveredCandidate.apply_url || null,
+          recoveredCandidate.notification_url || null,
+          officialCandidate.source_url,
+          officialSource.name,
+          officialSource.id,
+          officialCandidate.canonical_url ||
+            officialCandidate.source_url,
           'verification_required',
           'secondary_crosscheck',
-          confidence,
+          portalAgreement
+            ? 65
+            : 50,
           safeJson(evidence),
           iso(now)
         )
         .run();
     }
+  }
 
-    stats.verificationRequired++;
+  /*
+    If both portals recovered the missing URL,
+    Admin still receives a task because official
+    confirmation is required.
+  */
+  await notify(
+    db,
+    'secondary_crosscheck',
+    'Admin verification required',
+    `${officialCandidate.title}: Portal 1/2 recovered ${Object.keys(recovered).join(', ') || 'information'}, but official confirmation is still required.`,
+    target?.id || null
+  );
+
+  await recordEvent(
+    db,
+    {
+      itemId:
+        target?.id || null,
+
+      sourceId:
+        officialSource.id,
+
+      eventType:
+        'portal_fallback_recovered',
+
+      severity:
+        'warning',
+
+      message:
+        `Portal fallback recovered information for: ${officialCandidate.title}`,
+
+      evidence
+    }
+  );
+
+  return true;
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Portal fallback after official source is unavailable                       */
+/* -------------------------------------------------------------------------- */
+
+async function runPortalsForFallback(
+  db,
+  official,
+  now,
+  stats
+) {
+  /*
+    If official source is completely unavailable,
+    find existing recent items belonging to this
+    official source and try to recover them.
+  */
+  const rows =
+    await db
+      .prepare(`
+        SELECT *
+        FROM items
+        WHERE
+          source_id=?
+          AND status IN(
+            'published',
+            'verification_required'
+          )
+        ORDER BY
+          updated_at DESC
+        LIMIT ?
+      `)
+      .bind(
+        official.id,
+        CANDIDATE_LIMIT
+      )
+      .all();
+
+  const items =
+    rows.results || [];
+
+  /*
+    If there is no existing item, we cannot safely
+    invent a recruitment identity from portals.
+  */
+  if (!items.length) {
+    await notify(
+      db,
+      'source_unavailable',
+      'Admin action required: official source unavailable',
+      `${official.name} reached its daily retry limit and there are no existing recruitment records available for portal cross-check.`
+    );
+
+    return;
+  }
+
+  const portals =
+    await getPortalSources(
+      db,
+      official
+    );
+
+  if (
+    portals.length < 2
+  ) {
+    await notify(
+      db,
+      'configuration',
+      'Portal fallback not configured',
+      `${official.name} reached its daily retry limit. Two enabled portal sources are required.`
+    );
+
+    return;
+  }
+
+  /*
+    Query both portals once.
+  */
+  const portalResults = [];
+
+  for (
+    const portal of portals
+  ) {
+    try {
+      const candidates =
+        await discoverPortal(
+          portal
+        );
+
+      portalResults.push({
+        portal,
+        candidates:
+          candidates || []
+      });
+
+    } catch (error) {
+      stats.errors++;
+
+      await recordEvent(
+        db,
+        {
+          sourceId:
+            portal.id,
+
+          eventType:
+            'portal_error',
+
+          severity:
+            'warning',
+
+          message:
+            `${portal.name}: ${
+              error?.message || error
+            }`
+        }
+      );
+    }
+  }
+
+  /*
+    For each existing official recruitment,
+    compare both portal results.
+  */
+  for (
+    const item of items
+  ) {
+    const first =
+      portalResults[0];
+
+    const second =
+      portalResults[1];
+
+    const firstCandidate =
+      first?.candidates?.find(
+        candidate =>
+          sameRecruitment(
+            item,
+            candidate
+          )
+      ) || null;
+
+    const secondCandidate =
+      second?.candidates?.find(
+        candidate =>
+          sameRecruitment(
+            item,
+            candidate
+          )
+      ) || null;
+
+    if (
+      !firstCandidate ||
+      !secondCandidate
+    ) {
+      await notify(
+        db,
+        'source_unavailable',
+        'Admin verification required',
+        `${item.title}: official source unavailable and Portal 1/2 could not both confirm the recruitment.`,
+        item.id
+      );
+
+      continue;
+    }
+
+    const agreement =
+      comparable(
+        firstCandidate
+      ) ===
+      comparable(
+        secondCandidate
+      );
+
+    const recovered = {};
+
+    for (
+      const field of [
+        'notification_url',
+        'apply_url',
+        'last_date',
+        'application_start',
+        'exam_date',
+        'vacancies',
+        'qualification',
+        'eligibility',
+        'fee',
+        'selection_process',
+        'salary'
+      ]
+    ) {
+      if (
+        hasUsableUrl(
+          item[field]
+        )
+      ) {
+        continue;
+      }
+
+      const a =
+        firstCandidate[field];
+
+      const b =
+        secondCandidate[field];
+
+      if (
+        hasUsableUrl(a) &&
+        hasUsableUrl(b) &&
+        normalizeComparable(a) ===
+        normalizeComparable(b)
+      ) {
+        recovered[field] =
+          a;
+      }
+    }
+
+    const evidence = {
+      authority:
+        'secondary_only',
+
+      official_source:
+        official.name,
+
+      portals: [
+        first.portal.name,
+        second.portal.name
+      ],
+
+      agreement,
+
+      recovered,
+
+      official_source_status:
+        'unavailable'
+    };
+
+    const updates = [];
+    const values = [];
+
+    for (
+      const [field, value]
+      of Object.entries(recovered)
+    ) {
+      if (
+        !hasUsableUrl(
+          item[field]
+        )
+      ) {
+        updates.push(
+          `${field}=?`
+        );
+
+        values.push(value);
+      }
+    }
+
+    updates.push(
+      `evidence_json=?`
+    );
+
+    values.push(
+      safeJson(evidence)
+    );
+
+    updates.push(
+      `last_seen_at=?`
+    );
+
+    values.push(
+      iso(now)
+    );
+
+    /*
+      NEVER demote an already published
+      recruitment merely because the official
+      site is temporarily unavailable.
+    */
+    if (
+      item.status !== 'published'
+    ) {
+      updates.push(
+        `status=?`
+      );
+
+      values.push(
+        'verification_required'
+      );
+
+      updates.push(
+        `verification_status=?`
+      );
+
+      values.push(
+        'secondary_crosscheck'
+      );
+
+      updates.push(
+        `confidence_score=?`
+      );
+
+      values.push(
+        agreement
+          ? 65
+          : 50
+      );
+    }
+
+    values.push(
+      item.id
+    );
+
+    await db
+      .prepare(`
+        UPDATE items
+        SET
+          ${updates.join(',')},
+          updated_at=CURRENT_TIMESTAMP
+        WHERE id=?
+      `)
+      .bind(
+        ...values
+      )
+      .run();
 
     await notify(
       db,
-      'verification_required',
-      same
-        ? 'Two-portal match needs admin verification'
-        : 'Portal mismatch needs admin verification',
-      `${merged.title}. Official source was unavailable after the daily retry budget.`,
-      existing?.id || null
+      'secondary_crosscheck',
+      'Admin verification required',
+      `${item.title}: Portal 1/2 ${agreement ? 'agree' : 'do not fully agree'}. Official source is currently unavailable.`,
+      item.id
+    );
+
+    await recordEvent(
+      db,
+      {
+        itemId:
+          item.id,
+
+        sourceId:
+          official.id,
+
+        eventType:
+          'portal_fallback_existing_item',
+
+        severity:
+          'warning',
+
+        message:
+          `Portal fallback checked existing recruitment: ${item.title}`,
+
+        evidence
+      }
     );
   }
 }
 
-/*
-  Main monitoring entry point.
-*/
+
+/* -------------------------------------------------------------------------- */
+/* Official source processing                                                 */
+/* -------------------------------------------------------------------------- */
+
+async function runOfficial(
+  db,
+  source,
+  now,
+  stats
+) {
+  const current =
+    await resetRetryIfNewDay(
+      db,
+      source,
+      now
+    );
+
+  if (
+    current.circuit_until &&
+    new Date(
+      current.circuit_until
+    ) > now
+  ) {
+    return;
+  }
+
+  if (
+    current.next_retry_at &&
+    new Date(
+      current.next_retry_at
+    ) > now
+  ) {
+    return;
+  }
+
+  if (
+    Number(
+      current.retry_count || 0
+    ) >= RETRY_LIMIT
+  ) {
+    return;
+  }
+
+  try {
+    const candidates =
+      await discoverFromSource(
+        current
+      );
+
+    const limited =
+      (candidates || [])
+        .slice(
+          0,
+          CANDIDATE_LIMIT
+        );
+
+    /*
+      Successful fetch means the source itself
+      is reachable. Reset its retry counter.
+    */
+    await sourceSuccess(
+      db,
+      current,
+      now
+    );
+
+    for (
+      const candidate of limited
+    ) {
+      stats.discovered++;
+
+      let verification;
+
+      try {
+        verification =
+          await verifyCandidate(
+            candidate,
+            current
+          );
+      } catch (error) {
+        stats.errors++;
+
+        await recordEvent(
+          db,
+          {
+            sourceId:
+              current.id,
+
+            eventType:
+              'candidate_verification_error',
+
+            severity:
+              'error',
+
+            message:
+              `Candidate verification failed: ${
+                error?.message || error
+              }`,
+
+            evidence: {
+              title:
+                candidate?.title ||
+                null
+            }
+          }
+        );
+
+        continue;
+      }
+
+      /*
+        Existing record before update.
+      */
+      const existing =
+        await findExistingItem(
+          db,
+          candidate,
+          candidateKey(
+            candidate
+          )
+        );
+
+      /*
+        JOB/RECRUITMENT URL GATE
+        ------------------------
+        If an official recruitment candidate
+        is missing notification/apply URL,
+        do NOT publish it yet.
+
+        Immediately ask Portal 1 + Portal 2
+        to recover the missing information.
+      */
+      const isRecruitment =
+        candidate.type === 'job' ||
+        candidate.type === 'recruitment';
+
+      if (
+        isRecruitment &&
+        !hasCompleteRecruitmentUrls(
+          candidate
+        )
+      ) {
+        stats.verificationRequired++;
+
+        await portalFallbackForCandidate(
+          db,
+          current,
+          candidate,
+          verification,
+          existing,
+          now,
+          stats
+        );
+
+        /*
+          Do not publish incomplete recruitment.
+        */
+        continue;
+      }
+
+      /*
+        Complete recruitment but verification
+        failed -> verification_required.
+      */
+      if (
+        !verification ||
+        verification.ok !== true ||
+        Number(
+          verification.confidence || 0
+        ) < 85
+      ) {
+        stats.verificationRequired++;
+
+        const result =
+          await upsertOfficial(
+            db,
+            candidate,
+            verification,
+            current,
+            now
+          );
+
+        if (
+          result.created ||
+          result.changed
+        ) {
+          await notify(
+            db,
+            'verification_required',
+            'Admin verification required',
+            `${candidate.title}: official verification did not reach the automatic publish threshold.`,
+            result.id
+          );
+        }
+
+        await recordEvent(
+          db,
+          {
+            itemId:
+              result.id,
+
+            sourceId:
+              current.id,
+
+            eventType:
+              'verification_required',
+
+            severity:
+              'warning',
+
+            message:
+              `Automatic verification incomplete: ${candidate.title}`,
+
+            evidence: {
+              errors:
+                verification?.errors ||
+                [],
+
+              warnings:
+                verification?.warnings ||
+                [],
+
+              confidence:
+                verification?.confidence ||
+                0
+            }
+          }
+        );
+
+        continue;
+      }
+
+      /*
+        Fully verified official candidate.
+      */
+      const result =
+        await upsertOfficial(
+          db,
+          candidate,
+          verification,
+          current,
+          now
+        );
+
+      if (
+        result.published
+      ) {
+        stats.published++;
+      }
+
+      if (
+        result.updated
+      ) {
+        stats.updated++;
+      }
+    }
+
+  } catch (error) {
+    stats.errors++;
+
+    const failure =
+      await sourceFailure(
+        db,
+        current,
+        error,
+        now
+      );
+
+    await recordEvent(
+      db,
+      {
+        sourceId:
+          current.id,
+
+        eventType:
+          'source_error',
+
+        severity:
+          'error',
+
+        message:
+          `${failure.kind}: ${
+            error?.message || error
+          }`,
+
+        evidence: {
+          retry_count:
+            failure.count,
+
+          next_retry_at:
+            failure.next,
+
+          circuit_until:
+            failure.circuit
+        }
+      }
+    );
+
+    /*
+      After the official source has exhausted
+      its daily retry budget, check Portal 1/2
+      for existing records.
+    */
+    if (
+      failure.count >=
+      RETRY_LIMIT
+    ) {
+      await runPortalsForFallback(
+        db,
+        current,
+        now,
+        stats
+      );
+    }
+  }
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Main monitor                                                               */
+/* -------------------------------------------------------------------------- */
+
 export async function runMonitor(
   env,
   requestedSource = null
 ) {
-  const db = env.DB;
+  const db =
+    env.DB;
 
   const started =
     new Date();
@@ -1486,7 +2469,7 @@ export async function runMonitor(
   };
 
   /*
-    365-day cleanup first.
+    Retention cleanup.
   */
   stats.archived =
     await purgeExpiredItems(
@@ -1497,9 +2480,11 @@ export async function runMonitor(
   let sources;
 
   /*
-    Manual/admin requested source.
+    Manual source request.
   */
-  if (requestedSource) {
+  if (
+    requestedSource
+  ) {
     const result =
       await db
         .prepare(`
@@ -1522,15 +2507,10 @@ export async function runMonitor(
     sources =
       result.results || [];
 
-  }
-
-  /*
-    Normal scheduled monitoring.
-
-    last_checked_at is included so that
-    the 4-source batch rotates fairly.
-  */
-  else {
+  } else {
+    /*
+      Fair source rotation.
+    */
     const result =
       await db
         .prepare(`
@@ -1562,10 +2542,12 @@ export async function runMonitor(
       result.results || [];
   }
 
-  for (const source of sources) {
+  for (
+    const source of sources
+  ) {
     stats.sources++;
 
-    const errorsBefore =
+    const beforeErrors =
       stats.errors;
 
     try {
@@ -1575,23 +2557,26 @@ export async function runMonitor(
         new Date(),
         stats
       );
+
     } catch (error) {
-      /*
-        Last-resort protection so one source
-        cannot stop the entire monitoring run.
-      */
       stats.errors++;
 
       await recordEvent(
         db,
         {
-          sourceId: source.id,
+          sourceId:
+            source.id,
+
           eventType:
             'monitor_source_unhandled_error',
-          severity: 'error',
+
+          severity:
+            'error',
+
           message:
             String(
-              error?.message || error
+              error?.message ||
+              error
             )
         }
       );
@@ -1603,7 +2588,7 @@ export async function runMonitor(
 
       error:
         stats.errors >
-        errorsBefore
+        beforeErrors
     });
   }
 
@@ -1611,7 +2596,7 @@ export async function runMonitor(
     new Date();
 
   /*
-    Keep a permanent monitor-run summary.
+    Save run summary.
   */
   await db
     .prepare(`
@@ -1641,7 +2626,9 @@ export async function runMonitor(
       stats.blocked,
       stats.errors,
       stats.archived,
-      safeJson(stats.details)
+      safeJson(
+        stats.details
+      )
     )
     .run();
 
@@ -1654,4 +2641,4 @@ export async function runMonitor(
 
     ...stats
   };
-    }
+      }
