@@ -8,59 +8,104 @@ import {
   North Bharat Jobs
   Official-source discovery engine
 
-  IMPORTANT:
-  - Never invent URLs.
-  - Recruitment jobs require:
-      1. Official source page
-      2. Real notification PDF
-      3. Real apply/registration URL
-  - Official URL, notification URL and apply URL must be distinct.
-  - Generic career/login pages are NOT automatically treated as apply links.
-  - Weak/ambiguous pages are ignored instead of being published as jobs.
+  CORE RULES
+  ----------
+  1. Never invent URLs.
+  2. Official domain alone is NOT job evidence.
+  3. A PDF alone is NOT a recruitment notification.
+  4. Generic Home / RTI / Syllabus / Policy / Careers pages
+     must never become recruitment records.
+  5. Recruitment jobs require:
+       - real recruitment evidence
+       - real notification PDF
+       - real application/registration URL
+       - distinct URLs
+       - official-domain validation
+  6. Old application links must not be reused as current jobs.
+  7. The stable identity is the official detail page, not the PDF.
+     Therefore revised notifications update the same item.
 */
 
 const WORDS = {
   job:
-    /(recruitment|recruit|vacan(?:cy|cies)?|appointment|notification|advertisement|post(?:s)?|application|constable|officer|assistant|teacher|engineer|clerk|group\s*[abc]|staff\s*selection|selection\s*process)/i,
+    /\b(recruitment|recruit|vacanc(?:y|ies)|appointment|advertisement|employment\s+notice|job\s+notification|post(?:s)?\s+of|hiring|engagement|selection\s+process|application\s+form)\b/i,
 
   admit:
-    /(admit\s*card|hall\s*ticket|call\s*letter|e[-\s]?admit)/i,
+    /\b(admit\s*card|hall\s*ticket|call\s*letter|e[-\s]?admit)\b/i,
 
   result:
     /\b(result|merit|score|selection\s*list|shortlist|final\s*result|provisional\s*result)\b/i,
 
   answer:
-    /(answer\s*key|response\s*sheet|answer\s*sheet)/i,
+    /\b(answer\s*key|response\s*sheet|answer\s*sheet)\b/i,
 
   syllabus:
-    /\bsyllabus\b/i,
+    /\b(syllabus|scheme\s+and\s+syllabus)\b/i,
 
   admission:
-    /(admission|entrance|counselling|counseling|entrance\s*test)/i,
+    /\b(admission|entrance|counselling|counseling|entrance\s*test)\b/i,
 
   scholarship:
     /\bscholarship\b/i,
 
   update:
-    /(notice|latest|important|extension|corrigendum|exam\s*date|schedule|public\s*notice|official\s*notice)/i
+    /\b(notice|latest|important|extension|corrigendum|exam\s*date|schedule|public\s*notice|official\s*notice)\b/i
 };
 
 /*
-  IMPORTANT:
-  Do NOT include generic "careers" or "login" here.
-  Those links are frequently general pages and not actual application forms.
+  Apply links must contain an actual application/registration signal.
+
+  Generic:
+    /careers
+    /login
+    /home
+
+  are NOT automatically accepted.
 */
 const APPLY =
-  /(apply\s*(online|now|here)|online\s*application|application\s*(form|portal)|registration\s*(link|portal)?|register\s*(online|now)|apply\s*link|online\s*registration|candidate\s*login)/i;
+  /\b(apply\s*(online|now|here)|online\s*application|application\s*(form|portal)|registration\s*(link|portal)?|register\s*(online|now)|apply\s*link|online\s*registration)\b/i;
 
-const NOTIFY =
-  /(notification|advertisement|detailed\s*advertisement|recruitment|recruitment\s*notice|employment\s*notice|vacancy|prospectus|notice|corrigendum|extension).*\.pdf/i;
+/*
+  Notification PDF must contain a recruitment-related signal.
 
-const MAX_LINKS = 180;
-const MAX_PAGES = 18;
-const MAX_LINKS_PER_PAGE = 120;
+  IMPORTANT:
+  A random PDF such as:
+    RTI_Policy.pdf
+    annual_report.pdf
+    syllabus.pdf
+    tender.pdf
+
+  must NOT be accepted.
+*/
+const NOTIFICATION_SIGNAL =
+  /\b(notification|advertisement|recruitment|recruitment\s*notice|employment\s*notice|vacancy|vacancies|selection\s*notice|appointment|corrigendum|extension|job\s*notice|employment)\b/i;
+
+/*
+  Pages that are almost never individual recruitment detail pages.
+*/
+const BLOCKED_PAGE =
+  /\b(home|homepage|about|contact|feedback|privacy|terms|disclaimer|rti|right\s*to\s*information|syllabus|scheme|tender|procurement|policy|annual\s*report|archive|gallery|photo|press\s*release|login|sign\s*in|careers?|career)\b/i;
+
+/*
+  File/path signals which commonly indicate old/static material.
+*/
+const BLOCKED_FILE =
+  /\b(rti|policy|syllabus|curriculum|annual[_-]?report|tender|procurement|minutes|meeting|budget|press[_-]?release)\b/i;
+
+const MAX_LINKS = 220;
+const MAX_PAGES = 22;
+const MAX_LINKS_PER_PAGE = 150;
 
 const FETCH_TIMEOUT_MS = 12000;
+
+/*
+  Do not accept links that clearly contain an old recruitment year.
+
+  Current year is taken from the runtime, so this remains useful
+  as the calendar changes.
+*/
+const CURRENT_YEAR = new Date().getUTCFullYear();
+const MIN_ACCEPTABLE_YEAR = CURRENT_YEAR - 1;
 
 /* -------------------------------------------------------------------------- */
 /* Text helpers                                                               */
@@ -83,6 +128,7 @@ function textOf(html = '') {
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style[\s\S]*?<\/style>/gi, ' ')
       .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+      .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
       .replace(/<[^>]+>/g, ' ')
   )
     .replace(/\s+/g, ' ')
@@ -121,14 +167,76 @@ function sameUrl(a, b) {
   return x === y;
 }
 
-function isPdfCandidate(url = '', text = '') {
-  const combined = `${text} ${url}`.trim();
+function urlHasOldYear(url = '') {
+  const matches = String(url).match(/\b(19|20)\d{2}\b/g);
 
-  if (isPdfUrl(url)) return true;
+  if (!matches?.length) {
+    return false;
+  }
 
-  return /\.pdf(?:[?#]|$)/i.test(url) ||
-    /\bpdf\b/i.test(text) ||
-    NOTIFY.test(combined);
+  return matches.some(year => {
+    const y = Number(year);
+    return y < MIN_ACCEPTABLE_YEAR;
+  });
+}
+
+function isBlockedPath(url = '', text = '') {
+  const value = normalizedText(`${url} ${text}`);
+
+  /*
+    These are strong negative signals.
+
+    A recruitment detail page may contain the word "career"
+    somewhere in its content, so this check is primarily used
+    against the URL/link itself.
+  */
+  return BLOCKED_FILE.test(value);
+}
+
+function isGenericPage(url = '', text = '') {
+  const value = normalizedText(`${url} ${text}`);
+
+  /*
+    Generic homepage/root pages.
+  */
+  try {
+    const parsed = new URL(url);
+
+    const path =
+      parsed.pathname
+        .replace(/\/+/g, '/')
+        .replace(/\/$/, '')
+        .toLowerCase();
+
+    if (
+      path === '' ||
+      path === '/' ||
+      path === '/index.html' ||
+      path === '/index.htm' ||
+      path === '/default.aspx' ||
+      path === '/default.asp'
+    ) {
+      return true;
+    }
+  } catch {
+    /* Ignore malformed URL */
+  }
+
+  if (BLOCKED_PAGE.test(value)) {
+    /*
+      Do not reject every page containing "notice".
+      Notice can be a legitimate recruitment page.
+    */
+    if (
+      /\b(home|homepage|about|contact|rti|syllabus|policy|tender|procurement|annual\s*report|login|sign\s*in|careers?)\b/i.test(
+        value
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function looksLikeGenericCareerPage(url = '', text = '') {
@@ -174,9 +282,6 @@ function linksOf(html, base) {
 
       if (!rawHref) continue;
 
-      /*
-        Ignore javascript/mail/tel links.
-      */
       if (
         /^javascript:/i.test(rawHref) ||
         /^mailto:/i.test(rawHref) ||
@@ -186,11 +291,15 @@ function linksOf(html, base) {
         continue;
       }
 
-      const url = normalizeUrl(new URL(rawHref, base).toString());
+      const url =
+        normalizeUrl(
+          new URL(rawHref, base).toString()
+        );
 
       if (!url) continue;
 
-      const text = textOf(match[2]).slice(0, 500);
+      const text =
+        textOf(match[2]).slice(0, 500);
 
       out.push({
         url,
@@ -225,7 +334,7 @@ async function fetchWithTimeout(url) {
       headers: {
         'User-Agent':
           'NorthBharatJobs/1.0 (+official-source-monitor)',
-        'Accept':
+        Accept:
           'text/html,application/xhtml+xml,application/pdf;q=0.9,*/*;q=0.5'
       }
     });
@@ -233,25 +342,23 @@ async function fetchWithTimeout(url) {
     const contentType =
       response.headers.get('content-type') || '';
 
-    /*
-      Only read textual responses as text.
-      PDF/binary responses are not parsed as HTML.
-    */
     const isTextResponse =
       /text\/html|application\/xhtml\+xml|text\/plain/i.test(
         contentType
       );
 
-    const body = isTextResponse
-      ? await response.text()
-      : '';
+    const body =
+      isTextResponse
+        ? await response.text()
+        : '';
 
     return {
       ok: response.ok,
       status: response.status,
       body,
       contentType,
-      finalUrl: normalizeUrl(response.url || url) || url,
+      finalUrl:
+        normalizeUrl(response.url || url) || url,
       retryAfter:
         response.headers.get('retry-after'),
       isPdf:
@@ -280,11 +387,8 @@ async function fetchWithTimeout(url) {
 
 function classify(title, body) {
   const combined =
-    `${title} ${body.slice(0, 9000)}`;
+    `${title} ${body.slice(0, 12000)}`;
 
-  /*
-    More specific types first.
-  */
   if (WORDS.admit.test(combined)) {
     return 'admit_card';
   }
@@ -326,17 +430,17 @@ function extractDate(text, labels) {
 
   const patterns = [
     new RegExp(
-      `(?:${labels})[^\\d]{0,50}(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{2,4})`,
+      `(?:${labels})[^\\d]{0,70}(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{2,4})`,
       'i'
     ),
 
     new RegExp(
-      `(?:${labels})[^\\d]{0,50}(\\d{1,2}\\s+${month}\\s+\\d{4})`,
+      `(?:${labels})[^\\d]{0,70}(\\d{1,2}\\s+${month}\\s+\\d{4})`,
       'i'
     ),
 
     new RegExp(
-      `(?:${labels})[^\\d]{0,50}(${month}\\s+\\d{1,2},?\\s+\\d{4})`,
+      `(?:${labels})[^\\d]{0,70}(${month}\\s+\\d{1,2},?\\s+\\d{4})`,
       'i'
     )
   ];
@@ -357,19 +461,35 @@ function extractDate(text, labels) {
 /* -------------------------------------------------------------------------- */
 
 function recruitmentEvidence(title, body, links) {
-  const titleText = normalizedText(title);
-  const bodyText = normalizedText(body);
+  const titleText =
+    normalizedText(title);
+
+  const bodyText =
+    normalizedText(body);
 
   let score = 0;
   const evidence = [];
 
-  if (/\brecruitment\b|\brecruit\b/.test(titleText)) {
+  if (
+    /\brecruitment\b|\brecruit\b|\bvacanc(?:y|ies)\b/.test(
+      titleText
+    )
+  ) {
     score += 3;
     evidence.push('recruitment-title');
   }
 
   if (
-    /\bvacanc(?:y|ies)\b|\bnumber of posts\b|\bno\.?\s*of posts\b/.test(
+    /\badvertisement\b|\bemployment\s+notice\b|\bjob\s+notification\b/.test(
+      titleText
+    )
+  ) {
+    score += 3;
+    evidence.push('recruitment-advertisement-title');
+  }
+
+  if (
+    /\bnumber of posts\b|\bno\.?\s*of posts\b|\btotal posts\b|\bvacanc(?:y|ies)\b/.test(
       bodyText
     )
   ) {
@@ -378,16 +498,16 @@ function recruitmentEvidence(title, body, links) {
   }
 
   if (
-    /\bapplication start\b|\bapplication begins\b|\bregistration starts\b|\bonline application\b/.test(
+    /\bonline application\b|\bapplication form\b|\bregistration\b|\bapply online\b/.test(
       bodyText
     )
   ) {
     score += 2;
-    evidence.push('application-period');
+    evidence.push('application-signal');
   }
 
   if (
-    /\blast date\b|\bclosing date\b|\bapply by\b|\bdeadline\b/.test(
+    /\blast date\b|\bclosing date\b|\bapply by\b|\bdeadline\b|\bclosing\b/.test(
       bodyText
     )
   ) {
@@ -396,7 +516,7 @@ function recruitmentEvidence(title, body, links) {
   }
 
   if (
-    /\beligib(?:ility|le)\b|\bqualification\b|\beducational qualification\b/.test(
+    /\beligib(?:ility|le)\b|\bqualification\b|\beducational qualification\b|\bessential qualification\b/.test(
       bodyText
     )
   ) {
@@ -405,7 +525,7 @@ function recruitmentEvidence(title, body, links) {
   }
 
   if (
-    /\bselection process\b|\bselection procedure\b|\bwritten examination\b|\binterview\b/.test(
+    /\bselection process\b|\bselection procedure\b|\bwritten examination\b|\binterview\b|\bskill test\b/.test(
       bodyText
     )
   ) {
@@ -422,25 +542,50 @@ function recruitmentEvidence(title, body, links) {
     evidence.push('fee');
   }
 
+  /*
+    A PDF counts only when the link itself carries
+    recruitment/notification meaning.
+
+    A random PDF does NOT count.
+  */
   const hasNotification =
-    links.some(link =>
-      isPdfCandidate(link.url, link.text)
-    );
+    links.some(link => {
+      if (!isPdfUrl(link.url)) {
+        return false;
+      }
+
+      if (urlHasOldYear(link.url)) {
+        return false;
+      }
+
+      return NOTIFICATION_SIGNAL.test(
+        `${link.text} ${link.url}`
+      );
+    });
 
   if (hasNotification) {
-    score += 2;
-    evidence.push('notification-pdf-link');
+    score += 3;
+    evidence.push('recruitment-notification-pdf');
   }
 
   const hasApply =
-    links.some(link =>
-      !isPdfUrl(link.url) &&
-      APPLY.test(`${link.text} ${link.url}`)
-    );
+    links.some(link => {
+      if (isPdfUrl(link.url)) {
+        return false;
+      }
+
+      if (urlHasOldYear(link.url)) {
+        return false;
+      }
+
+      return APPLY.test(
+        `${link.text} ${link.url}`
+      );
+    });
 
   if (hasApply) {
-    score += 2;
-    evidence.push('apply-link');
+    score += 3;
+    evidence.push('current-apply-link');
   }
 
   return {
@@ -450,12 +595,14 @@ function recruitmentEvidence(title, body, links) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Candidate link selection                                                   */
+/* Notification selection                                                     */
 /* -------------------------------------------------------------------------- */
 
 function findNotificationLink(links, source) {
   for (const link of links) {
-    if (!isHttp(link.url)) continue;
+    if (!isHttp(link.url)) {
+      continue;
+    }
 
     if (
       source?.role === 'official' &&
@@ -467,32 +614,87 @@ function findNotificationLink(links, source) {
       continue;
     }
 
+    /*
+      Must actually be a PDF.
+    */
+    if (!isPdfUrl(link.url)) {
+      continue;
+    }
+
+    /*
+      Never accept clearly old material.
+    */
+    if (urlHasOldYear(link.url)) {
+      continue;
+    }
+
+    /*
+      RTI, policy, syllabus, tender etc. are never
+      recruitment notifications.
+    */
     if (
-      isPdfCandidate(link.url, link.text) &&
-      (
-        isPdfUrl(link.url) ||
-        NOTIFY.test(`${link.text} ${link.url}`)
+      isBlockedPath(
+        link.url,
+        link.text
       )
     ) {
-      return link;
+      continue;
     }
+
+    /*
+      THIS IS THE IMPORTANT FIX:
+
+      A PDF is not enough.
+      The PDF URL/text itself must carry a
+      recruitment/notification signal.
+    */
+    if (
+      !NOTIFICATION_SIGNAL.test(
+        `${link.text} ${link.url}`
+      )
+    ) {
+      continue;
+    }
+
+    return link;
   }
 
   return null;
 }
 
-function findApplyLink(links, sourceUrl, notificationUrl) {
+/* -------------------------------------------------------------------------- */
+/* Apply link selection                                                       */
+/* -------------------------------------------------------------------------- */
+
+function findApplyLink(
+  links,
+  sourceUrl,
+  notificationUrl
+) {
   for (const link of links) {
-    if (!isHttp(link.url)) continue;
+    if (!isHttp(link.url)) {
+      continue;
+    }
 
-    if (isPdfUrl(link.url)) continue;
+    if (isPdfUrl(link.url)) {
+      continue;
+    }
 
-    if (sameUrl(link.url, sourceUrl)) continue;
+    if (sameUrl(link.url, sourceUrl)) {
+      continue;
+    }
 
     if (
       notificationUrl &&
       sameUrl(link.url, notificationUrl)
     ) {
+      continue;
+    }
+
+    /*
+      Do not use links containing clearly old years.
+    */
+    if (urlHasOldYear(link.url)) {
       continue;
     }
 
@@ -503,12 +705,31 @@ function findApplyLink(links, sourceUrl, notificationUrl) {
       continue;
     }
 
+    if (
+      looksLikeGenericCareerPage(
+        link.url,
+        link.text
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      looksLikeLoginOnly(
+        link.url,
+        link.text
+      )
+    ) {
+      continue;
+    }
+
     /*
-      Do not treat a generic careers/login page as an application link.
+      Generic blocked paths are not application forms.
     */
     if (
-      looksLikeGenericCareerPage(link.url, link.text) ||
-      looksLikeLoginOnly(link.url, link.text)
+      /\b(home|about|contact|rti|syllabus|policy|tender)\b/i.test(
+        link.url
+      )
     ) {
       continue;
     }
@@ -529,13 +750,14 @@ function makeCandidate(page, source) {
       /<title[^>]*>([\s\S]*?)<\/title>/i
     );
 
-  const title = cleanTitle(
-    titleMatch?.[1] ||
+  const title =
+    cleanTitle(
+      titleMatch?.[1] ||
       textOf(page.body).slice(0, 220)
-  );
+    );
 
   const body =
-    textOf(page.body).slice(0, 14000);
+    textOf(page.body).slice(0, 18000);
 
   const sourceUrl =
     normalizeUrl(
@@ -547,10 +769,47 @@ function makeCandidate(page, source) {
     return null;
   }
 
-  const links = linksOf(
-    page.body,
-    page.finalUrl || page.url
-  ).slice(0, MAX_LINKS_PER_PAGE);
+  /*
+    A generic page must never become an item.
+  */
+  if (
+    isGenericPage(
+      sourceUrl,
+      title
+    )
+  ) {
+    return null;
+  }
+
+  /*
+    Clearly blocked URL/file paths are ignored.
+  */
+  if (
+    isBlockedPath(
+      sourceUrl,
+      title
+    )
+  ) {
+    return null;
+  }
+
+  /*
+    Do not turn old static pages into current items.
+  */
+  if (
+    urlHasOldYear(sourceUrl)
+  ) {
+    return null;
+  }
+
+  const links =
+    linksOf(
+      page.body,
+      page.finalUrl || page.url
+    ).slice(
+      0,
+      MAX_LINKS_PER_PAGE
+    );
 
   const notification =
     findNotificationLink(
@@ -566,7 +825,10 @@ function makeCandidate(page, source) {
     );
 
   const type =
-    classify(title, body);
+    classify(
+      title,
+      body
+    );
 
   const evidence =
     recruitmentEvidence(
@@ -576,77 +838,95 @@ function makeCandidate(page, source) {
     );
 
   /*
-    Recruitment page needs strong evidence.
-    This blocks generic pages such as:
-      - Customer Education
-      - About Us
-      - General Careers
-      - Generic notices
-  */
-  const strongRecruitmentEvidence =
-    evidence.score >= 5;
+    ------------------------------------------------------------
+    RECRUITMENT GATE
+    ------------------------------------------------------------
+
+    A recruitment candidate must have:
+
+      1. Strong recruitment evidence
+      2. Recruitment notification PDF
+      3. Current apply/registration URL
+      4. Three distinct URLs
+      5. Official domain
+    */
+  if (type === 'job') {
+    const strongEvidence =
+      evidence.score >= 8;
+
+    if (!strongEvidence) {
+      return null;
+    }
+
+    if (!notification?.url) {
+      return null;
+    }
+
+    if (!apply?.url) {
+      return null;
+    }
+
+    if (
+      sameUrl(
+        sourceUrl,
+        notification.url
+      ) ||
+      sameUrl(
+        sourceUrl,
+        apply.url
+      ) ||
+      sameUrl(
+        notification.url,
+        apply.url
+      )
+    ) {
+      return null;
+    }
+
+    if (
+      source.role === 'official' &&
+      !sameHostOrAllowed(
+        sourceUrl,
+        source.allowed_domains
+      )
+    ) {
+      return null;
+    }
+  }
 
   /*
-    For a recruitment item, both links are mandatory.
+    Only create non-job public records when
+    they have a meaningful category signal.
   */
   if (
-    type === 'job' &&
-    (
-      !notification?.url ||
-      !apply?.url ||
-      !strongRecruitmentEvidence
-    )
+    type !== 'job' &&
+    type !== 'admit_card' &&
+    type !== 'result' &&
+    type !== 'answer_key' &&
+    type !== 'syllabus' &&
+    type !== 'admission' &&
+    type !== 'scholarship'
   ) {
     return null;
   }
 
   /*
-    Ensure all three URLs are different.
+    Official URL.
   */
-  if (
-    type === 'job' &&
-    (
-      sameUrl(sourceUrl, notification?.url) ||
-      sameUrl(sourceUrl, apply?.url) ||
-      sameUrl(notification?.url, apply?.url)
-    )
-  ) {
-    return null;
-  }
+  const officialUrl =
+    source.role === 'official'
+      ? sourceUrl
+      : null;
 
   /*
-    Official source page itself must belong to allowed domain.
-  */
-  if (
-    source.role === 'official' &&
-    !sameHostOrAllowed(
-      sourceUrl,
-      source.allowed_domains
-    )
-  ) {
-    return null;
-  }
+    Stable identity:
+      source ID + canonical official detail page.
 
-  /*
-    Stable page identity is intentionally based on the
-    source detail page, not the PDF URL.
-
-    This is important because a revised notification PDF
-    should update the existing recruitment rather than
-    create a completely new item.
+    PDF changes do not create a new recruitment.
+    The existing item can be updated.
   */
   const canonicalPage =
     sourceUrl;
-
-  const notificationUrl =
-    normalizeUrl(
-      notification?.url
-    );
-
-  const applyUrl =
-    normalizeUrl(
-      apply?.url
-    );
 
   return {
     type,
@@ -659,7 +939,7 @@ function makeCandidate(page, source) {
       type,
 
     description:
-      body.slice(0, 4000),
+      body.slice(0, 5000),
 
     eligibility: null,
     qualification: null,
@@ -694,29 +974,15 @@ function makeCandidate(page, source) {
     how_to_apply: null,
     important_dates: null,
 
-    /*
-      Official page URL.
-    */
     official_url:
-      source.role === 'official'
-        ? sourceUrl
-        : null,
+      officialUrl,
 
-    /*
-      Real application URL.
-    */
     apply_url:
-      applyUrl,
+      apply?.url || null,
 
-    /*
-      Real notification PDF URL.
-    */
     notification_url:
-      notificationUrl,
+      notification?.url || null,
 
-    /*
-      Page from which this candidate was discovered.
-    */
     source_url:
       sourceUrl,
 
@@ -726,10 +992,6 @@ function makeCandidate(page, source) {
     source_id:
       source.id,
 
-    /*
-      Stable canonical identity.
-      PDF URL is deliberately NOT used here.
-    */
     canonical_url:
       canonicalPage,
 
@@ -746,7 +1008,7 @@ function makeCandidate(page, source) {
       evidence.evidence,
 
     _links:
-      links.slice(0, 20)
+      links.slice(0, 25)
   };
 }
 
@@ -756,7 +1018,9 @@ function makeCandidate(page, source) {
 
 export async function discoverFromSource(source) {
   if (!source?.base_url) {
-    throw new Error('Source base URL missing');
+    throw new Error(
+      'Source base URL missing'
+    );
   }
 
   const home =
@@ -770,15 +1034,14 @@ export async function discoverFromSource(source) {
         `HTTP ${home.status || 'fetch-error'}`
       ),
       {
-        status: home.status,
-        retryAfter: home.retryAfter
+        status:
+          home.status,
+        retryAfter:
+          home.retryAfter
       }
     );
   }
 
-  /*
-    A source homepage must be HTML.
-  */
   const homeIsHtml =
     /text\/html|application\/xhtml\+xml/i.test(
       home.contentType || ''
@@ -793,7 +1056,8 @@ export async function discoverFromSource(source) {
         'Security or unsupported content response'
       ),
       {
-        status: home.status
+        status:
+          home.status
       }
     );
   }
@@ -801,72 +1065,88 @@ export async function discoverFromSource(source) {
   const all =
     linksOf(
       home.body,
-      home.finalUrl || source.base_url
-    )
-      .filter(link =>
-        sameHostOrAllowed(
-          link.url,
-          source.allowed_domains
-        )
+      home.finalUrl ||
+      source.base_url
+    ).filter(link =>
+      sameHostOrAllowed(
+        link.url,
+        source.allowed_domains
+      )
+    );
+
+  /*
+    Select useful links from the source homepage.
+
+    We deliberately do NOT use every link.
+  */
+  const selected =
+    all
+      .filter(link => {
+        const text =
+          `${link.text} ${link.url}`;
+
+        if (
+          isGenericPage(
+            link.url,
+            link.text
+          )
+        ) {
+          return false;
+        }
+
+        if (
+          isBlockedPath(
+            link.url,
+            link.text
+          )
+        ) {
+          return false;
+        }
+
+        if (
+          urlHasOldYear(
+            link.url
+          )
+        ) {
+          return false;
+        }
+
+        return (
+          WORDS.job.test(text) ||
+          WORDS.admit.test(text) ||
+          WORDS.result.test(text) ||
+          WORDS.answer.test(text) ||
+          WORDS.syllabus.test(text) ||
+          WORDS.admission.test(text) ||
+          WORDS.scholarship.test(text)
+        );
+      })
+      .slice(
+        0,
+        MAX_PAGES
       );
 
   /*
-    Select only pages that have meaningful
-    recruitment/update signals.
+    IMPORTANT:
+    Homepage itself is NOT converted into a candidate.
+
+    Previously this was one of the reasons
+    "Home | UPPSC" became a record.
   */
-  const selected = all
-    .filter(link => {
-      const text =
-        `${link.text} ${link.url}`;
-
-      return (
-        WORDS.job.test(text) ||
-        WORDS.admit.test(text) ||
-        WORDS.result.test(text) ||
-        WORDS.answer.test(text) ||
-        WORDS.syllabus.test(text) ||
-        WORDS.admission.test(text) ||
-        WORDS.scholarship.test(text) ||
-        WORDS.update.test(text)
-      );
-    })
-    .slice(0, MAX_PAGES);
-
-  /*
-    Homepage itself is checked only for non-recruitment
-    categories. This prevents a generic homepage from
-    becoming a fake job item.
-  */
-  const pages = [
-    {
-      url:
-        home.finalUrl ||
-        source.base_url,
-
-      body:
-        home.body,
-
-      finalUrl:
-        home.finalUrl ||
-        source.base_url,
-
-      isHome: true
-    }
-  ];
+  const pages = [];
 
   for (const link of selected) {
-    if (pages.length >= MAX_PAGES) {
+    if (
+      pages.length >= MAX_PAGES
+    ) {
       break;
     }
 
-    /*
-      Never refetch exact homepage.
-    */
     if (
       sameUrl(
         link.url,
         home.finalUrl ||
-          source.base_url
+        source.base_url
       )
     ) {
       continue;
@@ -882,7 +1162,7 @@ export async function discoverFromSource(source) {
         response.contentType || ''
       ) ||
       /<html[\s>]/i.test(
-        response.body.slice(0, 2000)
+        response.body.slice(0, 3000)
       );
 
     if (
@@ -891,12 +1171,18 @@ export async function discoverFromSource(source) {
       response.body
     ) {
       pages.push({
-        url: link.url,
-        body: response.body,
+        url:
+          link.url,
+
+        body:
+          response.body,
+
         finalUrl:
           response.finalUrl ||
           link.url,
-        isHome: false
+
+        isHome:
+          false
       });
     }
   }
@@ -905,8 +1191,11 @@ export async function discoverFromSource(source) {
   /* Candidate generation                                                   */
   /* ---------------------------------------------------------------------- */
 
-  const seen = new Set();
-  const candidates = [];
+  const seen =
+    new Set();
+
+  const candidates =
+    [];
 
   for (const page of pages) {
     const candidate =
@@ -919,30 +1208,24 @@ export async function discoverFromSource(source) {
       continue;
     }
 
-    /*
-      Do not add the same source page twice.
-    */
     const pageKey =
       normalizeUrl(
         candidate.canonical_url ||
         candidate.source_url
       );
 
-    if (!pageKey || seen.has(pageKey)) {
+    if (
+      !pageKey ||
+      seen.has(pageKey)
+    ) {
       continue;
     }
 
     seen.add(pageKey);
 
-    /*
-      Recruitment candidates have already passed:
-        - notification PDF requirement
-        - apply URL requirement
-        - evidence threshold
-        - URL separation
-        - official-domain checks
-    */
-    candidates.push(candidate);
+    candidates.push(
+      candidate
+    );
   }
 
   return candidates;
@@ -953,5 +1236,7 @@ export async function discoverFromSource(source) {
 /* -------------------------------------------------------------------------- */
 
 export async function discoverPortal(source) {
-  return discoverFromSource(source);
-}
+  return discoverFromSource(
+    source
+  );
+      }
