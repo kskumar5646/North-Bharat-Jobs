@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "north-bharat-jobs",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-18",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/item/*", "/admin/*", "/sitemap.xml", "/robots.txt"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "north_bharat_jobs_fresh",
+      "database_id": "REPLACE_WITH_NEW_D1_DATABASE_ID"
+    }
+  ],
+  "triggers": {
+    "crons": ["*/5 * * * *", "17 2 * * *"]
+  },
+  "observability": { "enabled": true }
+}

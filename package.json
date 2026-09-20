@@ -1,0 +1,14 @@
+{
+  "name": "north-bharat-jobs",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "node --check src/index.js && node --check src/monitor.js && node --check src/sources.js && node --check src/verification.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.135.0"
+  }
+}
