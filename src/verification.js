@@ -2,6 +2,11 @@
   North Bharat Jobs
   Strict verification engine
 
+  Compatible with:
+    - sources.js
+    - monitor.js
+    - D1 verification flow
+
   IMPORTANT RULES
   ----------------
   JOB / RECRUITMENT
@@ -13,30 +18,30 @@
 
   ADMIT CARD
     - Official source required
-    - Admit-card related evidence required
+    - Admit-card evidence required
     - Apply URL NOT required
 
   RESULT
     - Official source required
-    - Result related evidence required
+    - Result evidence required
     - Apply URL NOT required
 
   ANSWER KEY
     - Official source required
-    - Answer-key related evidence required
+    - Answer-key evidence required
     - Apply URL NOT required
 
   SYLLABUS
     - Official source required
-    - Syllabus related evidence required
+    - Syllabus evidence required
 
   ADMISSION
     - Official source required
-    - Admission/entrance related evidence required
+    - Admission/entrance evidence required
 
   SCHOLARSHIP
     - Official source required
-    - Scholarship related evidence required
+    - Scholarship evidence required
 
   NEVER AUTO-PUBLISH
     - Home pages
@@ -48,12 +53,16 @@
     - Certificate
     - Tender
     - Annual report
-    - Generic recruitment information pages
+    - Generic recruitment pages
     - Old unrelated years
 */
 
 const CURRENT_YEAR = new Date().getUTCFullYear();
 const PREVIOUS_YEAR = CURRENT_YEAR - 1;
+
+/* -------------------------------------------------------
+   VALID TYPES
+------------------------------------------------------- */
 
 export const VALID_TYPES = new Set([
   "job",
@@ -104,34 +113,47 @@ function safeUrl(value) {
   }
 }
 
-function isHttpUrl(value) {
+/* -------------------------------------------------------
+   PUBLIC URL HELPERS
+   These are exported because sources.js imports them.
+------------------------------------------------------- */
+
+export function normalizeUrl(value) {
   const u = safeUrl(value);
-  return !!u && (u.protocol === "http:" || u.protocol === "https:");
+
+  if (!u) {
+    return "";
+  }
+
+  u.hash = "";
+
+  const removeParams = [
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_term",
+    "utm_content",
+    "fbclid",
+    "gclid",
+  ];
+
+  for (const param of removeParams) {
+    u.searchParams.delete(param);
+  }
+
+  return u.toString().replace(/\/$/, "");
 }
 
-function hostname(value) {
+export function isPdfUrl(value) {
   const u = safeUrl(value);
-  return u ? u.hostname.toLowerCase() : "";
-}
 
-function sameUrl(a, b) {
-  const ua = safeUrl(a);
-  const ub = safeUrl(b);
+  if (!u) {
+    return false;
+  }
 
-  if (!ua || !ub) return false;
-
-  ua.hash = "";
-  ub.hash = "";
-
-  return ua.toString().replace(/\/$/, "") ===
-    ub.toString().replace(/\/$/, "");
-}
-
-function isPdfUrl(value) {
-  const u = safeUrl(value);
-  if (!u) return false;
-
-  const path = decodeURIComponent(u.pathname).toLowerCase();
+  const path = decodeURIComponent(
+    u.pathname
+  ).toLowerCase();
 
   return (
     path.endsWith(".pdf") ||
@@ -140,47 +162,130 @@ function isPdfUrl(value) {
   );
 }
 
-function urlContains(value, regex) {
-  return regex.test(decodeURIComponent(text(value)).toLowerCase());
-}
+export function sameHostOrAllowed(
+  value,
+  allowedDomains
+) {
+  const u = safeUrl(value);
 
-function hostnameMatchesAllowed(url, allowedDomains) {
-  const host = hostname(url);
-  if (!host) return false;
+  if (!u) {
+    return false;
+  }
 
-  const domains = String(allowedDomains ?? "")
+  const host = u.hostname.toLowerCase();
+
+  const domains = String(
+    allowedDomains ?? ""
+  )
     .split(/[;,|\s]+/)
     .map(v => v.trim().toLowerCase())
     .filter(Boolean);
 
-  if (!domains.length) return false;
+  if (!domains.length) {
+    return false;
+  }
 
   return domains.some(domain =>
-    host === domain || host.endsWith(`.${domain}`)
-  );
-}
-
-function currentOrPreviousYear(value) {
-  const s = text(value);
-
-  const years = [...s.matchAll(/\b(20\d{2})\b/g)]
-    .map(m => Number(m[1]));
-
-  if (!years.length) return true;
-
-  return years.some(year =>
-    year === CURRENT_YEAR || year === PREVIOUS_YEAR
+    host === domain ||
+    host.endsWith(`.${domain}`)
   );
 }
 
 /* -------------------------------------------------------
-   FALSE / GENERIC PAGE DETECTION
+   INTERNAL URL HELPERS
+------------------------------------------------------- */
+
+function isHttpUrl(value) {
+  const u = safeUrl(value);
+
+  return (
+    !!u &&
+    (
+      u.protocol === "http:" ||
+      u.protocol === "https:"
+    )
+  );
+}
+
+function hostname(value) {
+  const u = safeUrl(value);
+
+  return u
+    ? u.hostname.toLowerCase()
+    : "";
+}
+
+function sameUrl(a, b) {
+  const ua = safeUrl(a);
+  const ub = safeUrl(b);
+
+  if (!ua || !ub) {
+    return false;
+  }
+
+  ua.hash = "";
+  ub.hash = "";
+
+  return (
+    ua.toString().replace(/\/$/, "") ===
+    ub.toString().replace(/\/$/, "")
+  );
+}
+
+function urlContains(value, regex) {
+  return regex.test(
+    decodeURIComponent(
+      text(value)
+    ).toLowerCase()
+  );
+}
+
+/* -------------------------------------------------------
+   ALLOWED DOMAIN CHECK
+------------------------------------------------------- */
+
+function hostnameMatchesAllowed(
+  url,
+  allowedDomains
+) {
+  return sameHostOrAllowed(
+    url,
+    allowedDomains
+  );
+}
+
+/* -------------------------------------------------------
+   YEAR CHECK
+------------------------------------------------------- */
+
+function currentOrPreviousYear(value) {
+  const s = text(value);
+
+  const years = [
+    ...s.matchAll(/\b(20\d{2})\b/g)
+  ].map(match =>
+    Number(match[1])
+  );
+
+  if (!years.length) {
+    return true;
+  }
+
+  return years.some(year =>
+    year === CURRENT_YEAR ||
+    year === PREVIOUS_YEAR
+  );
+}
+
+/* -------------------------------------------------------
+   GENERIC / ADMIN PAGE DETECTION
 ------------------------------------------------------- */
 
 const GENERIC_PAGE_RE = [
   /^home\b/i,
   /^welcome\b/i,
   /^homepage\b/i,
+
   /^upsc$/i,
   /^ssc$/i,
   /^mpsc$/i,
@@ -189,14 +294,18 @@ const GENERIC_PAGE_RE = [
   /^uppsc$/i,
   /^mp psc$/i,
   /^psc$/i,
+
   /^recruitment$/i,
   /^recruitment section$/i,
   /^recruitment cases$/i,
   /^recruitment requisition$/i,
+
   /^career(?:s)?$/i,
   /^careers and recruitment$/i,
+
   /^latest news$/i,
   /^what'?s new$/i,
+
   /^notifications?$/i,
   /^advertisements?$/i,
   /^forms?$/i,
@@ -212,6 +321,7 @@ const GENERIC_TITLE_RE = new RegExp(
     "^home\\b",
     "^welcome\\b",
     "^homepage$",
+
     "^upsc$",
     "^ssc$",
     "^mpsc$",
@@ -220,6 +330,7 @@ const GENERIC_TITLE_RE = new RegExp(
     "^uppsc$",
     "^mp psc$",
     "^psc$",
+
     "^career[s]?$",
     "^recruitment$",
     "^notification[s]?$",
@@ -238,9 +349,48 @@ const GENERIC_TITLE_RE = new RegExp(
 );
 
 const ADMIN_PAGE_RE =
-  /\b(rti|right\s+to\s+information|policy|policies|tender|annual\s+report|affidavit|certificate|proforma|forms?|manual|guidelines?|rules?|terms?|privacy|contact\s+us|about\s+us|organisation|organization|citizen\s+charter|press\s+release)\b/i;
+  /\b(
+    rti|
+    right\s+to\s+information|
+    policy|
+    policies|
+    tender|
+    annual\s+report|
+    affidavit|
+    certificate|
+    proforma|
+    forms?|
+    manual|
+    guidelines?|
+    rules?|
+    terms?|
+    privacy|
+    contact\s+us|
+    about\s+us|
+    organisation|
+    organization|
+    citizen\s+charter|
+    press\s+release
+  )\b/ix;
 
 const GENERIC_CAREER_RE =
+  /\b(
+    careers?|
+    career\s+opportunities|
+    work\s+with\s+us|
+    join\s+us|
+    employment\s+section
+  )\b/ix;
+
+/*
+  JavaScript does not support x-mode regex flags.
+  Therefore create safe equivalent regexes.
+*/
+
+const ADMIN_PAGE_SAFE_RE =
+  /\b(rti|right\s+to\s+information|policy|policies|tender|annual\s+report|affidavit|certificate|proforma|forms?|manual|guidelines?|rules?|terms?|privacy|contact\s+us|about\s+us|organisation|organization|citizen\s+charter|press\s+release)\b/i;
+
+const GENERIC_CAREER_SAFE_RE =
   /\b(careers?|career\s+opportunities|work\s+with\s+us|join\s+us|employment\s+section)\b/i;
 
 /* -------------------------------------------------------
@@ -338,16 +488,23 @@ const APPLY_RE =
   /\b(apply|application|registration|register|online.?form|apply.?online|candidate.?login|login|portal)\b/i;
 
 function isLikelyApplyUrl(url) {
-  if (!isHttpUrl(url)) return false;
-  if (isPdfUrl(url)) return false;
+  if (!isHttpUrl(url)) {
+    return false;
+  }
+
+  if (isPdfUrl(url)) {
+    return false;
+  }
 
   return APPLY_RE.test(
-    decodeURIComponent(text(url)).toLowerCase()
+    decodeURIComponent(
+      text(url)
+    ).toLowerCase()
   );
 }
 
 /* -------------------------------------------------------
-   TITLE / PAGE SIGNALS
+   SEARCH TEXT
 ------------------------------------------------------- */
 
 function candidateSearchText(candidate) {
@@ -367,16 +524,34 @@ function candidateSearchText(candidate) {
     .join(" ");
 }
 
+/* -------------------------------------------------------
+   TITLE VALIDATION
+------------------------------------------------------- */
+
 function hasSpecificTitle(candidate) {
-  const title = normalizeSpaces(candidate?.title);
+  const title =
+    normalizeSpaces(
+      candidate?.title
+    );
 
-  if (!title || title.length < 8) return false;
+  if (!title || title.length < 8) {
+    return false;
+  }
 
-  if (GENERIC_TITLE_RE.test(title)) return false;
+  if (GENERIC_TITLE_RE.test(title)) {
+    return false;
+  }
 
-  const org = normalizeSpaces(candidate?.organization);
+  const org =
+    normalizeSpaces(
+      candidate?.organization
+    );
 
-  if (org && title.toLowerCase() === org.toLowerCase()) {
+  if (
+    org &&
+    title.toLowerCase() ===
+      org.toLowerCase()
+  ) {
     return false;
   }
 
@@ -391,20 +566,35 @@ function hasSpecificTitle(candidate) {
   return true;
 }
 
+/* -------------------------------------------------------
+   GENERIC / ADMIN VALIDATION
+------------------------------------------------------- */
+
 function isGenericOrAdminPage(candidate) {
-  const title = normalizeSpaces(candidate?.title);
-  const search = candidateSearchText(candidate);
+  const title =
+    normalizeSpaces(
+      candidate?.title
+    );
 
-  if (GENERIC_PAGE_RE.some(re => re.test(title))) {
-    return true;
-  }
+  const search =
+    candidateSearchText(candidate);
 
-  if (ADMIN_PAGE_RE.test(title)) {
+  if (
+    GENERIC_PAGE_RE.some(
+      re => re.test(title)
+    )
+  ) {
     return true;
   }
 
   if (
-    ADMIN_PAGE_RE.test(search) &&
+    ADMIN_PAGE_SAFE_RE.test(title)
+  ) {
+    return true;
+  }
+
+  if (
+    ADMIN_PAGE_SAFE_RE.test(search) &&
     !RECRUITMENT_PDF_RE.test(search) &&
     !ANSWER_KEY_PDF_RE.test(search) &&
     !RESULT_PDF_RE.test(search) &&
@@ -414,7 +604,7 @@ function isGenericOrAdminPage(candidate) {
   }
 
   if (
-    GENERIC_CAREER_RE.test(title) &&
+    GENERIC_CAREER_SAFE_RE.test(title) &&
     !/\b(post|posts|vacancy|vacancies|recruitment|advertisement|notification)\b/i.test(
       search
     )
@@ -430,68 +620,121 @@ function isGenericOrAdminPage(candidate) {
 ------------------------------------------------------- */
 
 function getEvidenceScore(candidate) {
-  const value = Number(candidate?._evidence_score);
+  const value =
+    Number(
+      candidate?._evidence_score
+    );
 
-  if (Number.isFinite(value)) return value;
+  if (Number.isFinite(value)) {
+    return value;
+  }
 
   return 0;
 }
 
 function hasStrongSourceEvidence(candidate) {
-  return getEvidenceScore(candidate) >= 8;
+  return (
+    getEvidenceScore(candidate) >= 8
+  );
 }
 
-function hasCategorySignal(candidate, type) {
-  const rules = CATEGORY_SIGNALS[type];
+function hasCategorySignal(
+  candidate,
+  type
+) {
+  const rules =
+    CATEGORY_SIGNALS[type];
 
-  if (!rules) return false;
+  if (!rules) {
+    return false;
+  }
 
-  const search = candidateSearchText(candidate);
+  const search =
+    candidateSearchText(candidate);
 
-  return rules.some(re => re.test(search));
+  return rules.some(
+    re => re.test(search)
+  );
 }
 
-function notificationMatchesCategory(candidate, type) {
-  const notification = text(candidate?.notification_url);
+function notificationMatchesCategory(
+  candidate,
+  type
+) {
+  const notification =
+    text(
+      candidate?.notification_url
+    );
 
-  if (!notification) return false;
+  if (!notification) {
+    return false;
+  }
 
-  if (!isPdfUrl(notification)) return false;
+  if (!isPdfUrl(notification)) {
+    return false;
+  }
 
-  const decoded = decodeURIComponent(notification).toLowerCase();
+  const decoded =
+    decodeURIComponent(
+      notification
+    ).toLowerCase();
 
-  if (NON_NOTIFICATION_PDF_RE.test(decoded)) {
+  if (
+    NON_NOTIFICATION_PDF_RE.test(
+      decoded
+    )
+  ) {
     return false;
   }
 
   switch (type) {
     case "admit_card":
-      return ADMIT_PDF_RE.test(decoded);
+      return ADMIT_PDF_RE.test(
+        decoded
+      );
 
     case "result":
-      return RESULT_PDF_RE.test(decoded);
+      return RESULT_PDF_RE.test(
+        decoded
+      );
 
     case "answer_key":
-      return ANSWER_KEY_PDF_RE.test(decoded);
+      return ANSWER_KEY_PDF_RE.test(
+        decoded
+      );
 
     case "syllabus":
-      return SYLLABUS_PDF_RE.test(decoded);
+      return SYLLABUS_PDF_RE.test(
+        decoded
+      );
 
     case "admission":
-      return ADMISSION_PDF_RE.test(decoded);
+      return ADMISSION_PDF_RE.test(
+        decoded
+      );
 
     case "scholarship":
-      return SCHOLARSHIP_PDF_RE.test(decoded);
+      return SCHOLARSHIP_PDF_RE.test(
+        decoded
+      );
 
     default:
       return false;
   }
 }
 
-function officialUrlIsValid(candidate) {
-  const url = candidate?.official_url || candidate?.source_url;
+/* -------------------------------------------------------
+   OFFICIAL URL VALIDATION
+------------------------------------------------------- */
 
-  if (!isHttpUrl(url)) return false;
+function officialUrlIsValid(candidate) {
+  const url =
+    candidate?.official_url ||
+    candidate?.source_url;
+
+  if (!isHttpUrl(url)) {
+    return false;
+  }
 
   const allowed =
     candidate?.allowed_domains ||
@@ -499,94 +742,148 @@ function officialUrlIsValid(candidate) {
     candidate?._allowed_domains;
 
   if (!allowed) {
-    /*
-      If the source adapter already marked the candidate as official,
-      do not invent a domain restriction here.
-    */
-    return candidate?._official === true ||
+    return (
+      candidate?._official === true ||
       candidate?.authority === "official" ||
-      candidate?.source_role === "official";
+      candidate?.source_role === "official"
+    );
   }
 
-  return hostnameMatchesAllowed(url, allowed);
+  return hostnameMatchesAllowed(
+    url,
+    allowed
+  );
 }
 
 /* -------------------------------------------------------
-   JOB / RECRUITMENT VALIDATION
+   JOB VALIDATION
 ------------------------------------------------------- */
 
-function validateJobCandidate(candidate) {
+function validateJobCandidate(
+  candidate
+) {
   const errors = [];
   const warnings = [];
 
   const officialUrl =
-    candidate?.official_url || candidate?.source_url;
+    candidate?.official_url ||
+    candidate?.source_url;
 
-  const notificationUrl = candidate?.notification_url;
-  const applyUrl = candidate?.apply_url;
+  const notificationUrl =
+    candidate?.notification_url;
+
+  const applyUrl =
+    candidate?.apply_url;
 
   if (!isHttpUrl(officialUrl)) {
-    errors.push("missing_official_url");
+    errors.push(
+      "missing_official_url"
+    );
   }
 
   if (!isPdfUrl(notificationUrl)) {
-    errors.push("missing_notification_pdf");
+    errors.push(
+      "missing_notification_pdf"
+    );
   }
 
   if (!isLikelyApplyUrl(applyUrl)) {
-    errors.push("missing_apply_url");
+    errors.push(
+      "missing_apply_url"
+    );
   }
 
-  if (sameUrl(notificationUrl, applyUrl)) {
-    errors.push("notification_apply_same_url");
+  if (
+    sameUrl(
+      notificationUrl,
+      applyUrl
+    )
+  ) {
+    errors.push(
+      "notification_apply_same_url"
+    );
   }
 
-  if (sameUrl(officialUrl, applyUrl)) {
-    errors.push("official_apply_same_url");
+  if (
+    sameUrl(
+      officialUrl,
+      applyUrl
+    )
+  ) {
+    errors.push(
+      "official_apply_same_url"
+    );
   }
 
   if (
     isPdfUrl(notificationUrl) &&
     NON_NOTIFICATION_PDF_RE.test(
-      decodeURIComponent(notificationUrl).toLowerCase()
+      decodeURIComponent(
+        notificationUrl
+      ).toLowerCase()
     )
   ) {
-    errors.push("invalid_notification_pdf");
+    errors.push(
+      "invalid_notification_pdf"
+    );
   }
 
   if (
     isPdfUrl(notificationUrl) &&
     !RECRUITMENT_PDF_RE.test(
-      decodeURIComponent(notificationUrl).toLowerCase()
+      decodeURIComponent(
+        notificationUrl
+      ).toLowerCase()
     )
   ) {
-    errors.push("weak_recruitment_pdf_signal");
+    errors.push(
+      "weak_recruitment_pdf_signal"
+    );
   }
 
-  const search = candidateSearchText(candidate);
+  const search =
+    candidateSearchText(candidate);
 
   if (
     !/\b(recruitment|vacancy|vacancies|advertisement|notification|post|posts|employment|selection)\b/i.test(
       search
     )
   ) {
-    errors.push("weak_recruitment_signal");
+    errors.push(
+      "weak_recruitment_signal"
+    );
   }
 
-  if (!hasSpecificTitle(candidate)) {
-    errors.push("generic_title");
+  if (
+    !hasSpecificTitle(candidate)
+  ) {
+    errors.push(
+      "generic_title"
+    );
   }
 
-  if (!currentOrPreviousYear(search)) {
-    errors.push("old_year");
+  if (
+    !currentOrPreviousYear(search)
+  ) {
+    errors.push(
+      "old_year"
+    );
   }
 
-  if (!hasStrongSourceEvidence(candidate)) {
-    errors.push("weak_source_evidence");
+  if (
+    !hasStrongSourceEvidence(candidate)
+  ) {
+    errors.push(
+      "weak_source_evidence"
+    );
   }
 
-  if (!officialUrlIsValid(candidate)) {
-    errors.push("official_domain_not_verified");
+  if (
+    !officialUrlIsValid(candidate)
+  ) {
+    errors.push(
+      "official_domain_not_verified"
+    );
   }
 
   return {
@@ -597,100 +894,116 @@ function validateJobCandidate(candidate) {
 }
 
 /* -------------------------------------------------------
-   NON-JOB CATEGORY VALIDATION
+   DOCUMENT VALIDATION
 ------------------------------------------------------- */
 
-function validateDocumentCandidate(candidate, type) {
+function validateDocumentCandidate(
+  candidate,
+  type
+) {
   const errors = [];
   const warnings = [];
 
   const officialUrl =
-    candidate?.official_url || candidate?.source_url;
+    candidate?.official_url ||
+    candidate?.source_url;
 
-  const search = candidateSearchText(candidate);
+  const search =
+    candidateSearchText(candidate);
 
   if (!isHttpUrl(officialUrl)) {
-    errors.push("missing_official_url");
+    errors.push(
+      "missing_official_url"
+    );
   }
 
-  if (!hasSpecificTitle(candidate)) {
-    errors.push("generic_title");
+  if (
+    !hasSpecificTitle(candidate)
+  ) {
+    errors.push(
+      "generic_title"
+    );
   }
 
-  if (isGenericOrAdminPage(candidate)) {
-    errors.push("generic_or_admin_page");
+  if (
+    isGenericOrAdminPage(candidate)
+  ) {
+    errors.push(
+      "generic_or_admin_page"
+    );
   }
 
-  if (!currentOrPreviousYear(search)) {
-    errors.push("old_year");
+  if (
+    !currentOrPreviousYear(search)
+  ) {
+    errors.push(
+      "old_year"
+    );
   }
 
-  if (!hasStrongSourceEvidence(candidate)) {
-    errors.push("weak_source_evidence");
+  if (
+    !hasStrongSourceEvidence(candidate)
+  ) {
+    errors.push(
+      "weak_source_evidence"
+    );
   }
 
-  if (!officialUrlIsValid(candidate)) {
-    errors.push("official_domain_not_verified");
+  if (
+    !officialUrlIsValid(candidate)
+  ) {
+    errors.push(
+      "official_domain_not_verified"
+    );
   }
 
-  /*
-    Category-specific evidence is mandatory.
-  */
-  if (!hasCategorySignal(candidate, type)) {
-    errors.push(`missing_${type}_signal`);
+  if (
+    !hasCategorySignal(
+      candidate,
+      type
+    )
+  ) {
+    errors.push(
+      `missing_${type}_signal`
+    );
   }
 
-  /*
-    If a notification URL exists, it must be a genuine
-    category document. A random RTI / policy PDF is rejected.
-  */
-  if (candidate?.notification_url) {
-    if (!isPdfUrl(candidate.notification_url)) {
-      errors.push("notification_not_pdf");
-    } else if (
-      NON_NOTIFICATION_PDF_RE.test(
-        decodeURIComponent(candidate.notification_url).toLowerCase()
+  if (
+    candidate?.notification_url
+  ) {
+    if (
+      !isPdfUrl(
+        candidate.notification_url
       )
     ) {
-      errors.push("non_notification_pdf");
+      errors.push(
+        "notification_not_pdf"
+      );
+    } else if (
+      NON_NOTIFICATION_PDF_RE.test(
+        decodeURIComponent(
+          candidate.notification_url
+        ).toLowerCase()
+      )
+    ) {
+      errors.push(
+        "non_notification_pdf"
+      );
     }
   }
 
-  /*
-    If the adapter supplied a document URL, category matching
-    becomes stronger.
-  */
-  if (candidate?.notification_url) {
-    if (!notificationMatchesCategory(candidate, type)) {
-      /*
-        Do not automatically reject when the official page itself
-        contains strong category evidence but the PDF filename is
-        unusually named.
-
-        However, generic/admin PDFs are always rejected above.
-      */
-      if (
-        type === "answer_key" &&
-        !ANSWER_KEY_PDF_RE.test(
-          decodeURIComponent(candidate.notification_url).toLowerCase()
-        )
-      ) {
-        warnings.push("notification_filename_not_explicitly_category_named");
-      } else if (
-        type === "result" &&
-        !RESULT_PDF_RE.test(
-          decodeURIComponent(candidate.notification_url).toLowerCase()
-        )
-      ) {
-        warnings.push("notification_filename_not_explicitly_category_named");
-      } else if (
-        type === "admit_card" &&
-        !ADMIT_PDF_RE.test(
-          decodeURIComponent(candidate.notification_url).toLowerCase()
-        )
-      ) {
-        warnings.push("notification_filename_not_explicitly_category_named");
-      }
+  if (
+    candidate?.notification_url
+  ) {
+    if (
+      !notificationMatchesCategory(
+        candidate,
+        type
+      )
+    ) {
+      warnings.push(
+        "notification_filename_not_explicitly_category_named"
+      );
     }
   }
 
@@ -705,13 +1018,20 @@ function validateDocumentCandidate(candidate, type) {
    MAIN VALIDATION
 ------------------------------------------------------- */
 
-export function validateCandidate(candidate = {}) {
-  const type = lower(candidate.type);
+export function validateCandidate(
+  candidate = {}
+) {
+  const type =
+    lower(candidate.type);
 
-  if (!VALID_TYPES.has(type)) {
+  if (
+    !VALID_TYPES.has(type)
+  ) {
     return {
       ok: false,
-      errors: ["invalid_type"],
+      errors: [
+        "invalid_type"
+      ],
       warnings: [],
       type,
     };
@@ -720,28 +1040,53 @@ export function validateCandidate(candidate = {}) {
   const baseErrors = [];
   const baseWarnings = [];
 
-  if (!text(candidate.title)) {
-    baseErrors.push("missing_title");
+  if (
+    !text(candidate.title)
+  ) {
+    baseErrors.push(
+      "missing_title"
+    );
   }
 
-  if (!text(candidate.source_name)) {
-    baseErrors.push("missing_source_name");
+  if (
+    !text(candidate.source_name)
+  ) {
+    baseErrors.push(
+      "missing_source_name"
+    );
   }
 
-  if (isGenericOrAdminPage(candidate)) {
-    baseErrors.push("generic_or_admin_page");
+  if (
+    isGenericOrAdminPage(candidate)
+  ) {
+    baseErrors.push(
+      "generic_or_admin_page"
+    );
   }
 
   let result;
 
-  if (JOB_TYPES.has(type)) {
-    result = validateJobCandidate(candidate);
-  } else if (DOCUMENT_TYPES.has(type)) {
-    result = validateDocumentCandidate(candidate, type);
+  if (
+    JOB_TYPES.has(type)
+  ) {
+    result =
+      validateJobCandidate(
+        candidate
+      );
+  } else if (
+    DOCUMENT_TYPES.has(type)
+  ) {
+    result =
+      validateDocumentCandidate(
+        candidate,
+        type
+      );
   } else {
     result = {
       ok: false,
-      errors: ["unsupported_type"],
+      errors: [
+        "unsupported_type"
+      ],
       warnings: [],
     };
   }
@@ -761,7 +1106,9 @@ export function validateCandidate(candidate = {}) {
   ];
 
   return {
-    ok: errors.length === 0,
+    ok:
+      errors.length === 0,
+
     errors,
     warnings,
     type,
@@ -772,18 +1119,21 @@ export function validateCandidate(candidate = {}) {
    CONFIDENCE
 ------------------------------------------------------- */
 
-export function calculateConfidence(candidate = {}, validation = null) {
+export function calculateConfidence(
+  candidate = {},
+  validation = null
+) {
   const v =
     validation ||
-    validateCandidate(candidate);
+    validateCandidate(
+      candidate
+    );
 
   let score = 0;
 
-  const type = lower(candidate.type);
+  const type =
+    lower(candidate.type);
 
-  /*
-    Official authority
-  */
   if (
     candidate?._official === true ||
     candidate?.authority === "official" ||
@@ -792,81 +1142,101 @@ export function calculateConfidence(candidate = {}, validation = null) {
     score += 30;
   }
 
-  /*
-    Valid official URL
-  */
-  if (officialUrlIsValid(candidate)) {
+  if (
+    officialUrlIsValid(candidate)
+  ) {
     score += 20;
   }
 
-  /*
-    Evidence
-  */
-  if (getEvidenceScore(candidate) >= 8) {
+  const evidenceScore =
+    getEvidenceScore(candidate);
+
+  if (evidenceScore >= 8) {
     score += 15;
-  } else if (getEvidenceScore(candidate) >= 5) {
+  } else if (
+    evidenceScore >= 5
+  ) {
     score += 8;
   }
 
-  /*
-    Specific title
-  */
-  if (hasSpecificTitle(candidate)) {
+  if (
+    hasSpecificTitle(candidate)
+  ) {
     score += 10;
   }
 
-  /*
-    Category evidence
-  */
-  if (DOCUMENT_TYPES.has(type) && hasCategorySignal(candidate, type)) {
+  if (
+    DOCUMENT_TYPES.has(type) &&
+    hasCategorySignal(
+      candidate,
+      type
+    )
+  ) {
     score += 10;
   }
 
-  /*
-    Job-specific requirements
-  */
-  if (JOB_TYPES.has(type)) {
-    if (isPdfUrl(candidate.notification_url)) {
+  if (
+    JOB_TYPES.has(type)
+  ) {
+    if (
+      isPdfUrl(
+        candidate.notification_url
+      )
+    ) {
       score += 5;
     }
 
-    if (isLikelyApplyUrl(candidate.apply_url)) {
+    if (
+      isLikelyApplyUrl(
+        candidate.apply_url
+      )
+    ) {
       score += 10;
     }
   } else {
-    /*
-      For result/answer-key/admit-card/etc.,
-      a notification PDF is useful but NOT mandatory.
-    */
-    if (isPdfUrl(candidate.notification_url)) {
+    if (
+      isPdfUrl(
+        candidate.notification_url
+      )
+    ) {
       score += 5;
     }
   }
 
   /*
-    Never allow invalid candidates to get a publish-level score.
+    Invalid candidate can never
+    reach publish-level score.
   */
   if (!v.ok) {
-    return Math.min(score, 79);
+    return Math.min(
+      score,
+      79
+    );
   }
 
-  /*
-    Valid candidates can reach 100.
-  */
-  return Math.min(score, 100);
+  return Math.min(
+    score,
+    100
+  );
 }
 
 /* -------------------------------------------------------
-   VERIFICATION
+   VERIFY
 ------------------------------------------------------- */
 
-export function verifyCandidate(candidate = {}) {
-  const validation = validateCandidate(candidate);
+export function verifyCandidate(
+  candidate = {}
+) {
+  const validation =
+    validateCandidate(
+      candidate
+    );
 
-  const confidence = calculateConfidence(
-    candidate,
-    validation
-  );
+  const confidence =
+    calculateConfidence(
+      candidate,
+      validation
+    );
 
   const isOfficial =
     candidate?._official === true ||
@@ -886,26 +1256,38 @@ export function verifyCandidate(candidate = {}) {
   return {
     ...candidate,
 
-    type: lower(candidate.type),
+    type:
+      lower(candidate.type),
 
-    verification_status: status,
+    verification_status:
+      status,
 
-    confidence_score: confidence,
+    confidence_score:
+      confidence,
 
     autoPublishEligible,
 
     _verification: {
-      ok: validation.ok,
-      errors: validation.errors,
-      warnings: validation.warnings,
+      ok:
+        validation.ok,
+
+      errors:
+        validation.errors,
+
+      warnings:
+        validation.warnings,
     },
 
     _evidence: {
       authority:
-        isOfficial ? "official" : "unknown",
+        isOfficial
+          ? "official"
+          : "unknown",
 
       evidence_score:
-        getEvidenceScore(candidate),
+        getEvidenceScore(
+          candidate
+        ),
 
       category:
         lower(candidate.type),
@@ -917,12 +1299,16 @@ export function verifyCandidate(candidate = {}) {
 }
 
 /* -------------------------------------------------------
-   STABLE NOTIFICATION KEY
+   NOTIFICATION KEY
 ------------------------------------------------------- */
 
-export function canonicalNotificationKey(candidate = {}) {
+export function canonicalNotificationKey(
+  candidate = {}
+) {
   const explicit =
-    text(candidate.notification_key);
+    text(
+      candidate.notification_key
+    );
 
   if (explicit) {
     return explicit
@@ -932,7 +1318,9 @@ export function canonicalNotificationKey(candidate = {}) {
   }
 
   const source =
-    lower(candidate.source_name);
+    lower(
+      candidate.source_name
+    );
 
   const canonical =
     text(
@@ -943,22 +1331,18 @@ export function canonicalNotificationKey(candidate = {}) {
     );
 
   const title =
-    normalizeSpaces(candidate.title)
-      .toLowerCase();
+    normalizeSpaces(
+      candidate.title
+    ).toLowerCase();
 
-  /*
-    Prefer a stable canonical URL.
-  */
   if (canonical) {
     try {
-      const u = new URL(canonical);
+      const u =
+        new URL(canonical);
 
       u.hash = "";
 
-      /*
-        Remove tracking parameters.
-      */
-      const removeParams = [
+      [
         "utm_source",
         "utm_medium",
         "utm_campaign",
@@ -966,121 +1350,179 @@ export function canonicalNotificationKey(candidate = {}) {
         "utm_content",
         "fbclid",
         "gclid",
-      ];
+      ].forEach(
+        param =>
+          u.searchParams.delete(
+            param
+          )
+      );
 
-      for (const p of removeParams) {
-        u.searchParams.delete(p);
-      }
-
-      return `${source}|${u.toString().replace(/\/$/, "")}`;
+      return (
+        `${source}|` +
+        u.toString()
+          .replace(/\/$/, "")
+      );
     } catch {
       // fall through
     }
   }
 
-  return `${source}|${title}`;
+  return (
+    `${source}|${title}`
+  );
 }
 
 /* -------------------------------------------------------
    STABLE FINGERPRINT
 ------------------------------------------------------- */
 
-export function stableFingerprint(candidate = {}) {
+function normalizeUrlForFingerprint(
+  value
+) {
+  return normalizeUrl(
+    value
+  ).toLowerCase();
+}
+
+export function stableFingerprint(
+  candidate = {}
+) {
   const stable = {
-    type: lower(candidate.type),
-    title: normalizeSpaces(candidate.title).toLowerCase(),
-    organization: normalizeSpaces(candidate.organization).toLowerCase(),
-    category: normalizeSpaces(candidate.category).toLowerCase(),
+    type:
+      lower(candidate.type),
+
+    title:
+      normalizeSpaces(
+        candidate.title
+      ).toLowerCase(),
+
+    organization:
+      normalizeSpaces(
+        candidate.organization
+      ).toLowerCase(),
+
+    category:
+      normalizeSpaces(
+        candidate.category
+      ).toLowerCase(),
 
     qualification:
-      normalizeSpaces(candidate.qualification).toLowerCase(),
+      normalizeSpaces(
+        candidate.qualification
+      ).toLowerCase(),
 
     vacancies:
-      normalizeSpaces(candidate.vacancies).toLowerCase(),
+      normalizeSpaces(
+        candidate.vacancies
+      ).toLowerCase(),
 
     age_limit:
-      normalizeSpaces(candidate.age_limit).toLowerCase(),
+      normalizeSpaces(
+        candidate.age_limit
+      ).toLowerCase(),
 
     fee:
-      normalizeSpaces(candidate.fee).toLowerCase(),
+      normalizeSpaces(
+        candidate.fee
+      ).toLowerCase(),
 
     selection_process:
-      normalizeSpaces(candidate.selection_process).toLowerCase(),
+      normalizeSpaces(
+        candidate.selection_process
+      ).toLowerCase(),
 
     salary:
-      normalizeSpaces(candidate.salary).toLowerCase(),
+      normalizeSpaces(
+        candidate.salary
+      ).toLowerCase(),
 
     application_start:
-      normalizeSpaces(candidate.application_start).toLowerCase(),
+      normalizeSpaces(
+        candidate.application_start
+      ).toLowerCase(),
 
     last_date:
-      normalizeSpaces(candidate.last_date).toLowerCase(),
+      normalizeSpaces(
+        candidate.last_date
+      ).toLowerCase(),
 
     exam_date:
-      normalizeSpaces(candidate.exam_date).toLowerCase(),
+      normalizeSpaces(
+        candidate.exam_date
+      ).toLowerCase(),
 
     official_url:
-      normalizeUrlForFingerprint(candidate.official_url),
+      normalizeUrlForFingerprint(
+        candidate.official_url
+      ),
 
     notification_url:
-      normalizeUrlForFingerprint(candidate.notification_url),
+      normalizeUrlForFingerprint(
+        candidate.notification_url
+      ),
 
     apply_url:
-      normalizeUrlForFingerprint(candidate.apply_url),
+      normalizeUrlForFingerprint(
+        candidate.apply_url
+      ),
   };
 
-  return JSON.stringify(stable);
-}
-
-function normalizeUrlForFingerprint(value) {
-  const u = safeUrl(value);
-
-  if (!u) {
-    return "";
-  }
-
-  u.hash = "";
-
-  [
-    "utm_source",
-    "utm_medium",
-    "utm_campaign",
-    "utm_term",
-    "utm_content",
-    "fbclid",
-    "gclid",
-  ].forEach(p => u.searchParams.delete(p));
-
-  return u.toString().replace(/\/$/, "").toLowerCase();
-}
-
-/* -------------------------------------------------------
-   PUBLIC PUBLISH CHECK
-------------------------------------------------------- */
-
-export function canAutoPublish(candidate = {}) {
-  const result = verifyCandidate(candidate);
-
-  return (
-    result.autoPublishEligible === true &&
-    result.verification_status === "verified"
+  return JSON.stringify(
+    stable
   );
 }
 
 /* -------------------------------------------------------
-   DEBUG-FRIENDLY SUMMARY
+   AUTO PUBLISH
 ------------------------------------------------------- */
 
-export function verificationSummary(candidate = {}) {
-  const result = verifyCandidate(candidate);
+export function canAutoPublish(
+  candidate = {}
+) {
+  const result =
+    verifyCandidate(
+      candidate
+    );
+
+  return (
+    result.autoPublishEligible === true &&
+    result.verification_status ===
+      "verified"
+  );
+}
+
+/* -------------------------------------------------------
+   DEBUG SUMMARY
+------------------------------------------------------- */
+
+export function verificationSummary(
+  candidate = {}
+) {
+  const result =
+    verifyCandidate(
+      candidate
+    );
 
   return {
-    title: candidate.title || "",
-    type: candidate.type || "",
-    ok: result._verification.ok,
-    status: result.verification_status,
-    confidence_score: result.confidence_score,
-    errors: result._verification.errors,
-    warnings: result._verification.warnings,
+    title:
+      candidate.title || "",
+
+    type:
+      candidate.type || "",
+
+    ok:
+      result._verification.ok,
+
+    status:
+      result.verification_status,
+
+    confidence_score:
+      result.confidence_score,
+
+    errors:
+      result._verification.errors,
+
+    warnings:
+      result._verification.warnings,
   };
-}
+      }
