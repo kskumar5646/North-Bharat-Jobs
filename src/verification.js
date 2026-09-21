@@ -2,1535 +2,1085 @@
   North Bharat Jobs
   Strict verification engine
 
-  PURPOSE
-  -------
-  This file is the final safety gate before an item can become
-  publishable.
+  IMPORTANT RULES
+  ----------------
+  JOB / RECRUITMENT
+    - Official source required
+    - Real recruitment notification PDF required
+    - Real apply URL required
+    - Notification and apply URLs must be different
+    - Generic/career/home/RTI/policy PDFs are rejected
 
-  RULES
-  -----
-  1. Official domain alone is NOT enough.
-  2. Generic pages are rejected.
-  3. RTI / policy / affidavit / forms / syllabus-list pages
-     cannot become recruitment notifications.
-  4. Old recruitment/application links are rejected.
-  5. Recruitment requires:
-       official_url
-       notification_url
-       apply_url
-  6. Notification must be a genuine recruitment/update PDF.
-  7. Apply URL must be a real application/registration page.
-  8. Admit/result/answer/syllabus/admission pages require
-     category-specific evidence.
-  9. Portal evidence is secondary only.
-  10. Confidence >= 85 is possible only for strong evidence.
+  ADMIT CARD
+    - Official source required
+    - Admit-card related evidence required
+    - Apply URL NOT required
+
+  RESULT
+    - Official source required
+    - Result related evidence required
+    - Apply URL NOT required
+
+  ANSWER KEY
+    - Official source required
+    - Answer-key related evidence required
+    - Apply URL NOT required
+
+  SYLLABUS
+    - Official source required
+    - Syllabus related evidence required
+
+  ADMISSION
+    - Official source required
+    - Admission/entrance related evidence required
+
+  SCHOLARSHIP
+    - Official source required
+    - Scholarship related evidence required
+
+  NEVER AUTO-PUBLISH
+    - Home pages
+    - Organisation-only pages
+    - RTI
+    - Policy
+    - Forms
+    - Affidavit
+    - Certificate
+    - Tender
+    - Annual report
+    - Generic recruitment information pages
+    - Old unrelated years
 */
 
+const CURRENT_YEAR = new Date().getUTCFullYear();
+const PREVIOUS_YEAR = CURRENT_YEAR - 1;
 
-/* -------------------------------------------------------------------------- */
-/* Types                                                                      */
-/* -------------------------------------------------------------------------- */
+export const VALID_TYPES = new Set([
+  "job",
+  "recruitment",
+  "admit_card",
+  "result",
+  "answer_key",
+  "syllabus",
+  "admission",
+  "scholarship",
+]);
 
-const JOB_TYPES =
-  new Set([
-    'job',
-    'recruitment'
-  ]);
+const JOB_TYPES = new Set([
+  "job",
+  "recruitment",
+]);
 
-const VALID_TYPES =
-  new Set([
-    'job',
-    'recruitment',
-    'admit_card',
-    'result',
-    'answer_key',
-    'syllabus',
-    'admission',
-    'scholarship'
-  ]);
+const DOCUMENT_TYPES = new Set([
+  "admit_card",
+  "result",
+  "answer_key",
+  "syllabus",
+  "admission",
+  "scholarship",
+]);
 
+/* -------------------------------------------------------
+   BASIC HELPERS
+------------------------------------------------------- */
 
-/* -------------------------------------------------------------------------- */
-/* URL patterns                                                               */
-/* -------------------------------------------------------------------------- */
-
-const PDF_RE =
-  /\.pdf(?:[?#]|$)/i;
-
-const GENERIC_PAGE_RE =
-  /(?:^|[\/_-])(?:about|contact|privacy|terms|disclaimer|login|signin|sign-in|home|index|faq|feedback|tender|policy|rti|sitemap)(?:[\/_.?#-]|$)/i;
-
-const GENERIC_TITLE_RE =
-  /\b(?:home|welcome|about us|contact us|privacy policy|terms and conditions|disclaimer|site map|sitemap|feedback|rti|right to information|tender|policy|citizen charter)\b/i;
-
-const GENERIC_CAREER_RE =
-  /\b(?:career|careers|recruitment|employment)\b/i;
-
-const APPLY_RE =
-  /\b(?:apply|application|registration|register|candidate\s*login|online\s*form|apply\s*online)\b/i;
-
-
-/* -------------------------------------------------------------------------- */
-/* False-document patterns                                                    */
-/* -------------------------------------------------------------------------- */
-
-const NON_NOTIFICATION_PDF_RE =
-  /\b(?:rti|right[\s_-]*to[\s_-]*information|policy|policies|privacy|affidavit|undertaking|declaration|certificate|proforma|proformae|form(?:s)?|application[\s_-]*form|answer[\s_-]*sheet|syllabus|scheme|rules|manual|guidelines|annual[\s_-]*report|audit|tender|quotation|notice[\s_-]*board|office[\s_-]*order|press[\s_-]*release|calendar|schedule|corrigendum[\s_-]*format)\b/i;
-
-const RECRUITMENT_PDF_RE =
-  /\b(?:advertisement|advert|notification|recruitment|recruit|vacancy|vacancies|employment|selection|appointment|engagement|post|posts|exam|examination|direct[\s_-]*recruitment|combined[\s_-]*competitive|application[\s_-]*notice|notice[\s_-]*for[\s_-]*recruitment)\b/i;
-
-const ADMIT_PDF_RE =
-  /\b(?:admit|admit[\s_-]*card|hall[\s_-]*ticket|e[\s_-]*admit|call[\s_-]*letter|entrance[\s_-]*card)\b/i;
-
-const RESULT_PDF_RE =
-  /\b(?:result|results|merit|merit[\s_-]*list|selection[\s_-]*list|final[\s_-]*result|score|marks|qualified|shortlisted|rank[\s_-]*list)\b/i;
-
-const ANSWER_PDF_RE =
-  /\b(?:answer[\s_-]*key|answer[\s_-]*keys|provisional[\s_-]*answer|final[\s_-]*answer)\b/i;
-
-const SYLLABUS_PDF_RE =
-  /\b(?:syllabus|scheme[\s_-]*of[\s_-]*examination|exam[\s_-]*scheme|course[\s_-]*outline)\b/i;
-
-const ADMISSION_RE =
-  /\b(?:admission|entrance|entrance[\s_-]*exam|application[\s_-]*form|counselling|counseling|university|college|nta|jee|neet)\b/i;
-
-
-/* -------------------------------------------------------------------------- */
-/* Old-link protection                                                        */
-/* -------------------------------------------------------------------------- */
-
-const YEAR_RE =
-  /\b(19\d{2}|20\d{2}|21\d{2})\b/g;
-
-function currentYear() {
-  return new Date().getUTCFullYear();
+function text(value) {
+  return String(value ?? "").trim();
 }
 
-function extractYears(value) {
-  return [
-    ...String(value || '')
-      .matchAll(YEAR_RE)
-  ]
-    .map(match =>
-      Number(match[1])
-    )
-    .filter(Number.isFinite);
+function lower(value) {
+  return text(value).toLowerCase();
 }
 
-function containsClearlyOldYear(
-  value
-) {
-  const years =
-    extractYears(value);
-
-  if (!years.length) {
-    return false;
-  }
-
-  const year =
-    currentYear();
-
-  /*
-    Keep current year and immediately previous
-    year because government recruitment cycles
-    can legitimately continue across a year.
-  */
-  return years.some(
-    y =>
-      y < year - 1
-  );
+function normalizeSpaces(value) {
+  return text(value).replace(/\s+/g, " ").trim();
 }
 
-function containsFutureImpossibleYear(
-  value
-) {
-  const years =
-    extractYears(value);
-
-  if (!years.length) {
-    return false;
-  }
-
-  const year =
-    currentYear();
-
-  return years.some(
-    y =>
-      y > year + 1
-  );
-}
-
-
-/* -------------------------------------------------------------------------- */
-/* URL helpers                                                                */
-/* -------------------------------------------------------------------------- */
-
-export function isHttpUrl(value) {
+function safeUrl(value) {
   try {
-    const u =
-      new URL(value);
-
-    return (
-      u.protocol === 'https:' ||
-      u.protocol === 'http:'
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function sameHostOrAllowed(
-  url,
-  allowedDomains = ''
-) {
-  try {
-    const host =
-      new URL(url)
-        .hostname
-        .toLowerCase();
-
-    return String(
-      allowedDomains || ''
-    )
-      .split(';')
-      .map(
-        x =>
-          x.trim()
-            .toLowerCase()
-      )
-      .filter(Boolean)
-      .some(domain =>
-        host === domain ||
-        host.endsWith(
-          `.${domain}`
-        )
-      );
-
-  } catch {
-    return false;
-  }
-}
-
-export function isPdfUrl(url) {
-  return PDF_RE.test(
-    String(url || '')
-  );
-}
-
-export function normalizeUrl(value) {
-  if (
-    !value ||
-    !isHttpUrl(value)
-  ) {
-    return null;
-  }
-
-  try {
-    const u =
-      new URL(value);
-
-    u.hash = '';
-
-    u.hostname =
-      u.hostname.toLowerCase();
-
-    if (
-      (
-        u.protocol ===
-        'https:' &&
-        u.port === '443'
-      ) ||
-      (
-        u.protocol ===
-        'http:' &&
-        u.port === '80'
-      )
-    ) {
-      u.port = '';
-    }
-
-    return u.toString();
-
+    return new URL(text(value));
   } catch {
     return null;
   }
 }
 
-export function distinctUrls(
-  values = []
-) {
-  return [
-    ...new Set(
-      values
-        .map(normalizeUrl)
-        .filter(Boolean)
-    )
-  ];
+function isHttpUrl(value) {
+  const u = safeUrl(value);
+  return !!u && (u.protocol === "http:" || u.protocol === "https:");
 }
 
-
-/* -------------------------------------------------------------------------- */
-/* URL comparison                                                             */
-/* -------------------------------------------------------------------------- */
+function hostname(value) {
+  const u = safeUrl(value);
+  return u ? u.hostname.toLowerCase() : "";
+}
 
 function sameUrl(a, b) {
-  const x =
-    normalizeUrl(a);
+  const ua = safeUrl(a);
+  const ub = safeUrl(b);
 
-  const y =
-    normalizeUrl(b);
+  if (!ua || !ub) return false;
 
-  return Boolean(
-    x &&
-    y &&
-    x === y
+  ua.hash = "";
+  ub.hash = "";
+
+  return ua.toString().replace(/\/$/, "") ===
+    ub.toString().replace(/\/$/, "");
+}
+
+function isPdfUrl(value) {
+  const u = safeUrl(value);
+  if (!u) return false;
+
+  const path = decodeURIComponent(u.pathname).toLowerCase();
+
+  return (
+    path.endsWith(".pdf") ||
+    /\/pdf(?:\/|$)/i.test(path) ||
+    /document.*pdf/i.test(path)
   );
 }
 
-function isExternalApplyAllowed(
-  applyUrl,
-  source
-) {
-  if (!applyUrl) {
+function urlContains(value, regex) {
+  return regex.test(decodeURIComponent(text(value)).toLowerCase());
+}
+
+function hostnameMatchesAllowed(url, allowedDomains) {
+  const host = hostname(url);
+  if (!host) return false;
+
+  const domains = String(allowedDomains ?? "")
+    .split(/[;,|\s]+/)
+    .map(v => v.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (!domains.length) return false;
+
+  return domains.some(domain =>
+    host === domain || host.endsWith(`.${domain}`)
+  );
+}
+
+function currentOrPreviousYear(value) {
+  const s = text(value);
+
+  const years = [...s.matchAll(/\b(20\d{2})\b/g)]
+    .map(m => Number(m[1]));
+
+  if (!years.length) return true;
+
+  return years.some(year =>
+    year === CURRENT_YEAR || year === PREVIOUS_YEAR
+  );
+}
+
+/* -------------------------------------------------------
+   FALSE / GENERIC PAGE DETECTION
+------------------------------------------------------- */
+
+const GENERIC_PAGE_RE = [
+  /^home\b/i,
+  /^welcome\b/i,
+  /^homepage\b/i,
+  /^upsc$/i,
+  /^ssc$/i,
+  /^mpsc$/i,
+  /^bpsc$/i,
+  /^jpsc$/i,
+  /^uppsc$/i,
+  /^mp psc$/i,
+  /^psc$/i,
+  /^recruitment$/i,
+  /^recruitment section$/i,
+  /^recruitment cases$/i,
+  /^recruitment requisition$/i,
+  /^career(?:s)?$/i,
+  /^careers and recruitment$/i,
+  /^latest news$/i,
+  /^what'?s new$/i,
+  /^notifications?$/i,
+  /^advertisements?$/i,
+  /^forms?$/i,
+  /^downloads?$/i,
+  /^important links$/i,
+  /^notice board$/i,
+  /^notices?$/i,
+  /^circulars?$/i,
+];
+
+const GENERIC_TITLE_RE = new RegExp(
+  [
+    "^home\\b",
+    "^welcome\\b",
+    "^homepage$",
+    "^upsc$",
+    "^ssc$",
+    "^mpsc$",
+    "^bpsc$",
+    "^jpsc$",
+    "^uppsc$",
+    "^mp psc$",
+    "^psc$",
+    "^career[s]?$",
+    "^recruitment$",
+    "^notification[s]?$",
+    "^advertisement[s]?$",
+    "^result[s]?$",
+    "^answer key$",
+    "^admit card$",
+    "^syllabus$",
+    "^forms?$",
+    "^downloads?$",
+    "^notice board$",
+    "^notices?$",
+    "^circulars?$",
+  ].join("|"),
+  "i"
+);
+
+const ADMIN_PAGE_RE =
+  /\b(rti|right\s+to\s+information|policy|policies|tender|annual\s+report|affidavit|certificate|proforma|forms?|manual|guidelines?|rules?|terms?|privacy|contact\s+us|about\s+us|organisation|organization|citizen\s+charter|press\s+release)\b/i;
+
+const GENERIC_CAREER_RE =
+  /\b(careers?|career\s+opportunities|work\s+with\s+us|join\s+us|employment\s+section)\b/i;
+
+/* -------------------------------------------------------
+   PDF CLASSIFICATION
+------------------------------------------------------- */
+
+const NON_NOTIFICATION_PDF_RE =
+  /\b(rti|right.?to.?information|policy|policies|affidavit|certificate|proforma|forms?|form\b|syllabus|rules?|manual|guidelines?|annual.?report|tender|office.?order|press.?release|calendar|minutes|agenda|notice\s+board|citizen.?charter|terms|privacy)\b/i;
+
+const RECRUITMENT_PDF_RE =
+  /\b(advt|advt\.|advertisement|advert|notification|recruitment|vacancy|vacancies|employment|selection|appointment|engagement|recruit|hiring|exam|examination)\b/i;
+
+const ADMIT_PDF_RE =
+  /\b(admit.?card|e.?admit|hall.?ticket|call.?letter|admission.?ticket|download.?admit)\b/i;
+
+const RESULT_PDF_RE =
+  /\b(result|written.?result|final.?result|merit|selection.?list|qualified|shortlisted|roll.?number|rank.?list|score.?card)\b/i;
+
+const ANSWER_KEY_PDF_RE =
+  /\b(answer.?key|provisional.?answer|final.?answer|response.?key|answer.?sheet|objection)\b/i;
+
+const SYLLABUS_PDF_RE =
+  /\b(syllabus|curriculum|exam.?pattern|course.?content|scheme.?of.?examination)\b/i;
+
+const ADMISSION_PDF_RE =
+  /\b(admission|entrance|entrance.?exam|prospectus|counselling|counseling|enrolment|enrollment)\b/i;
+
+const SCHOLARSHIP_PDF_RE =
+  /\b(scholarship|fellowship|financial.?assistance|stipend)\b/i;
+
+/* -------------------------------------------------------
+   CATEGORY SIGNALS
+------------------------------------------------------- */
+
+const CATEGORY_SIGNALS = {
+  admit_card: [
+    /\badmit[\s-]?card\b/i,
+    /\be[\s-]?admit\b/i,
+    /\bhall[\s-]?ticket\b/i,
+    /\bcall[\s-]?letter\b/i,
+    /\badmission[\s-]?ticket\b/i,
+  ],
+
+  result: [
+    /\bresult\b/i,
+    /\bwritten[\s-]?result\b/i,
+    /\bfinal[\s-]?result\b/i,
+    /\bmerit[\s-]?list\b/i,
+    /\bselection[\s-]?list\b/i,
+    /\bqualified\b/i,
+    /\bshortlisted\b/i,
+    /\bscore[\s-]?card\b/i,
+  ],
+
+  answer_key: [
+    /\banswer[\s-]?key\b/i,
+    /\bprovisional[\s-]?answer\b/i,
+    /\bfinal[\s-]?answer\b/i,
+    /\bresponse[\s-]?key\b/i,
+    /\banswer[\s-]?sheet\b/i,
+    /\bobjection\b/i,
+  ],
+
+  syllabus: [
+    /\bsyllabus\b/i,
+    /\bcurriculum\b/i,
+    /\bexam[\s-]?pattern\b/i,
+    /\bscheme[\s-]?of[\s-]?examination\b/i,
+  ],
+
+  admission: [
+    /\badmission\b/i,
+    /\bentrance\b/i,
+    /\bentrance[\s-]?exam\b/i,
+    /\bprospectus\b/i,
+    /\bcounselling\b/i,
+    /\bcounseling\b/i,
+    /\benrolment\b/i,
+    /\benrollment\b/i,
+  ],
+
+  scholarship: [
+    /\bscholarship\b/i,
+    /\bfellowship\b/i,
+    /\bfinancial[\s-]?assistance\b/i,
+    /\bstipend\b/i,
+  ],
+};
+
+/* -------------------------------------------------------
+   APPLY URL
+------------------------------------------------------- */
+
+const APPLY_RE =
+  /\b(apply|application|registration|register|online.?form|apply.?online|candidate.?login|login|portal)\b/i;
+
+function isLikelyApplyUrl(url) {
+  if (!isHttpUrl(url)) return false;
+  if (isPdfUrl(url)) return false;
+
+  return APPLY_RE.test(
+    decodeURIComponent(text(url)).toLowerCase()
+  );
+}
+
+/* -------------------------------------------------------
+   TITLE / PAGE SIGNALS
+------------------------------------------------------- */
+
+function candidateSearchText(candidate) {
+  return [
+    candidate?.title,
+    candidate?.description,
+    candidate?.eligibility,
+    candidate?.qualification,
+    candidate?.source_url,
+    candidate?.official_url,
+    candidate?.notification_url,
+    candidate?.apply_url,
+    candidate?.canonical_url,
+  ]
+    .map(text)
+    .filter(Boolean)
+    .join(" ");
+}
+
+function hasSpecificTitle(candidate) {
+  const title = normalizeSpaces(candidate?.title);
+
+  if (!title || title.length < 8) return false;
+
+  if (GENERIC_TITLE_RE.test(title)) return false;
+
+  const org = normalizeSpaces(candidate?.organization);
+
+  if (org && title.toLowerCase() === org.toLowerCase()) {
     return false;
   }
 
   if (
-    isPdfUrl(applyUrl)
+    /^home\s*\|/i.test(title) ||
+    /^home\s*-/i.test(title) ||
+    /^welcome\s*\|/i.test(title)
   ) {
     return false;
   }
 
-  if (
-    !isHttpUrl(applyUrl)
-  ) {
-    return false;
-  }
-
-  /*
-    Official application portals may use
-    another government domain.
-
-    External domain is therefore allowed,
-    but later checks still apply.
-  */
   return true;
 }
 
+function isGenericOrAdminPage(candidate) {
+  const title = normalizeSpaces(candidate?.title);
+  const search = candidateSearchText(candidate);
 
-/* -------------------------------------------------------------------------- */
-/* Generic page detection                                                     */
-/* -------------------------------------------------------------------------- */
+  if (GENERIC_PAGE_RE.some(re => re.test(title))) {
+    return true;
+  }
 
-function looksGenericPage(
-  url
-) {
-  return GENERIC_PAGE_RE.test(
-    String(url || '')
-  );
-}
-
-function looksGenericTitle(
-  title
-) {
-  return GENERIC_TITLE_RE.test(
-    String(title || '')
-  );
-}
-
-function looksGenericCareerPage(
-  url,
-  title = ''
-) {
-  const value =
-    `${url || ''} ${title || ''}`;
-
-  return (
-    GENERIC_CAREER_RE.test(
-      value
-    ) &&
-    !APPLY_RE.test(value)
-  );
-}
-
-
-/* -------------------------------------------------------------------------- */
-/* Category-specific false-positive checks                                    */
-/* -------------------------------------------------------------------------- */
-
-function looksNonNotificationPdf(
-  url,
-  title = ''
-) {
-  return NON_NOTIFICATION_PDF_RE.test(
-    `${url || ''} ${title || ''}`
-  );
-}
-
-function looksRecruitmentPdf(
-  url,
-  title = ''
-) {
-  return RECRUITMENT_PDF_RE.test(
-    `${url || ''} ${title || ''}`
-  );
-}
-
-function looksAdmitEvidence(
-  candidate
-) {
-  return (
-    ADMIT_PDF_RE.test(
-      `${candidate?.title || ''} ${candidate?.notification_url || ''} ${candidate?.official_url || ''}`
-    ) ||
-    /\badmit[\s_-]*card\b/i.test(
-      `${candidate?.title || ''} ${candidate?.description || ''} ${candidate?.source_url || ''}`
-    )
-  );
-}
-
-function looksResultEvidence(
-  candidate
-) {
-  return (
-    RESULT_PDF_RE.test(
-      `${candidate?.title || ''} ${candidate?.notification_url || ''} ${candidate?.official_url || ''}`
-    ) ||
-    /\bresult\b/i.test(
-      `${candidate?.title || ''} ${candidate?.description || ''} ${candidate?.source_url || ''}`
-    )
-  );
-}
-
-function looksAnswerKeyEvidence(
-  candidate
-) {
-  return ANSWER_PDF_RE.test(
-    `${candidate?.title || ''} ${candidate?.notification_url || ''} ${candidate?.official_url || ''}`
-  );
-}
-
-function looksSyllabusEvidence(
-  candidate
-) {
-  return SYLLABUS_PDF_RE.test(
-    `${candidate?.title || ''} ${candidate?.notification_url || ''} ${candidate?.official_url || ''}`
-  );
-}
-
-function looksAdmissionEvidence(
-  candidate
-) {
-  return ADMISSION_RE.test(
-    `${candidate?.title || ''} ${candidate?.description || ''} ${candidate?.official_url || ''} ${candidate?.notification_url || ''}`
-  );
-}
-
-
-/* -------------------------------------------------------------------------- */
-/* Evidence score from sources.js                                             */
-/* -------------------------------------------------------------------------- */
-
-function sourceEvidenceScore(
-  candidate
-) {
-  const score =
-    Number(
-      candidate?._evidence_score || 0
-    );
-
-  return Number.isFinite(score)
-    ? score
-    : 0;
-}
-
-function hasStrongSourceEvidence(
-  candidate
-) {
-  /*
-    sources.js is expected to provide its own
-    evidence score.
-
-    A zero score means we do not have enough
-    discovery evidence to trust the page.
-  */
-  return (
-    sourceEvidenceScore(
-      candidate
-    ) >= 8
-  );
-}
-
-
-/* -------------------------------------------------------------------------- */
-/* Title quality                                                              */
-/* -------------------------------------------------------------------------- */
-
-function hasSpecificTitle(
-  candidate
-) {
-  const title =
-    String(
-      candidate?.title || ''
-    ).trim();
+  if (ADMIN_PAGE_RE.test(title)) {
+    return true;
+  }
 
   if (
-    title.length < 8
+    ADMIN_PAGE_RE.test(search) &&
+    !RECRUITMENT_PDF_RE.test(search) &&
+    !ANSWER_KEY_PDF_RE.test(search) &&
+    !RESULT_PDF_RE.test(search) &&
+    !ADMIT_PDF_RE.test(search)
   ) {
+    return true;
+  }
+
+  if (
+    GENERIC_CAREER_RE.test(title) &&
+    !/\b(post|posts|vacancy|vacancies|recruitment|advertisement|notification)\b/i.test(
+      search
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/* -------------------------------------------------------
+   EVIDENCE
+------------------------------------------------------- */
+
+function getEvidenceScore(candidate) {
+  const value = Number(candidate?._evidence_score);
+
+  if (Number.isFinite(value)) return value;
+
+  return 0;
+}
+
+function hasStrongSourceEvidence(candidate) {
+  return getEvidenceScore(candidate) >= 8;
+}
+
+function hasCategorySignal(candidate, type) {
+  const rules = CATEGORY_SIGNALS[type];
+
+  if (!rules) return false;
+
+  const search = candidateSearchText(candidate);
+
+  return rules.some(re => re.test(search));
+}
+
+function notificationMatchesCategory(candidate, type) {
+  const notification = text(candidate?.notification_url);
+
+  if (!notification) return false;
+
+  if (!isPdfUrl(notification)) return false;
+
+  const decoded = decodeURIComponent(notification).toLowerCase();
+
+  if (NON_NOTIFICATION_PDF_RE.test(decoded)) {
     return false;
   }
 
-  if (
-    looksGenericTitle(title)
-  ) {
-    return false;
-  }
+  switch (type) {
+    case "admit_card":
+      return ADMIT_PDF_RE.test(decoded);
 
-  /*
-    A title that consists only of the organisation
-    name is not a specific update.
-  */
-  const organization =
-    String(
-      candidate?.organization || ''
-    )
-      .trim()
-      .toLowerCase();
+    case "result":
+      return RESULT_PDF_RE.test(decoded);
 
-  if (
-    organization &&
-    title.toLowerCase() ===
-      organization
-  ) {
-    return false;
-  }
+    case "answer_key":
+      return ANSWER_KEY_PDF_RE.test(decoded);
 
-  return true;
-}
+    case "syllabus":
+      return SYLLABUS_PDF_RE.test(decoded);
 
+    case "admission":
+      return ADMISSION_PDF_RE.test(decoded);
 
-/* -------------------------------------------------------------------------- */
-/* Category validation                                                        */
-/* -------------------------------------------------------------------------- */
+    case "scholarship":
+      return SCHOLARSHIP_PDF_RE.test(decoded);
 
-function validateCategoryEvidence(
-  candidate,
-  type,
-  errors
-) {
-  const text =
-    [
-      candidate?.title,
-      candidate?.description,
-      candidate?.official_url,
-      candidate?.notification_url,
-      candidate?.source_url
-    ]
-      .filter(Boolean)
-      .join(' ');
-
-  /*
-    All public update categories require a
-    specific title/evidence signal.
-  */
-  if (
-    !hasSpecificTitle(candidate)
-  ) {
-    errors.push(
-      'Candidate title is too generic'
-    );
-  }
-
-  if (
-    !hasStrongSourceEvidence(
-      candidate
-    )
-  ) {
-    errors.push(
-      'Insufficient source evidence'
-    );
-  }
-
-  if (
-    type === 'admit_card' &&
-    !looksAdmitEvidence(candidate)
-  ) {
-    errors.push(
-      'No strong admit-card evidence'
-    );
-  }
-
-  if (
-    type === 'result' &&
-    !looksResultEvidence(candidate)
-  ) {
-    errors.push(
-      'No strong result evidence'
-    );
-  }
-
-  if (
-    type === 'answer_key' &&
-    !looksAnswerKeyEvidence(candidate)
-  ) {
-    errors.push(
-      'No strong answer-key evidence'
-    );
-  }
-
-  if (
-    type === 'syllabus' &&
-    !looksSyllabusEvidence(candidate)
-  ) {
-    errors.push(
-      'No strong syllabus evidence'
-    );
-  }
-
-  if (
-    type === 'admission' &&
-    !looksAdmissionEvidence(candidate)
-  ) {
-    errors.push(
-      'No strong admission evidence'
-    );
-  }
-
-  /*
-    Reject obvious administrative documents
-    regardless of category.
-  */
-  if (
-    NON_NOTIFICATION_PDF_RE.test(text) &&
-    (
-      type === 'answer_key' ||
-      type === 'admit_card' ||
-      type === 'result'
-    )
-  ) {
-    errors.push(
-      'Administrative/non-publication document cannot represent this category'
-    );
-  }
-
-  /*
-    An RTI/policy page cannot become a public
-    recruitment/update item.
-  */
-  if (
-    /\b(?:rti|right to information|privacy policy|terms|disclaimer|tender|policy)\b/i.test(
-      text
-    )
-  ) {
-    errors.push(
-      'Administrative page cannot be used as public update evidence'
-    );
+    default:
+      return false;
   }
 }
 
+function officialUrlIsValid(candidate) {
+  const url = candidate?.official_url || candidate?.source_url;
 
-/* -------------------------------------------------------------------------- */
-/* Slug / hash                                                                */
-/* -------------------------------------------------------------------------- */
+  if (!isHttpUrl(url)) return false;
 
-export function slugify(
-  value
-) {
-  return String(
-    value || ''
-  )
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(
-      /[^\p{Letter}\p{Number}]+/gu,
-      '-'
-    )
-    .replace(
-      /^-+|-+$/g,
-      ''
-    )
-    .slice(
-      0,
-      110
-    )
-    ||
-    `item-${Date.now()}`;
-}
+  const allowed =
+    candidate?.allowed_domains ||
+    candidate?.source_allowed_domains ||
+    candidate?._allowed_domains;
 
-export async function sha256Hex(
-  value
-) {
-  const bytes =
-    new TextEncoder().encode(
-      String(value)
-    );
-
-  const digest =
-    await crypto.subtle.digest(
-      'SHA-256',
-      bytes
-    );
-
-  return [
-    ...new Uint8Array(
-      digest
-    )
-  ]
-    .map(
-      b =>
-        b.toString(16)
-          .padStart(2, '0')
-    )
-    .join('');
-}
-
-
-/* -------------------------------------------------------------------------- */
-/* Stable notification identity                                               */
-/* -------------------------------------------------------------------------- */
-
-export function canonicalNotificationKey(
-  candidate
-) {
-  if (
-    candidate?.notification_key &&
-    String(
-      candidate.notification_key
-    ).trim()
-  ) {
-    return String(
-      candidate.notification_key
-    ).trim();
+  if (!allowed) {
+    /*
+      If the source adapter already marked the candidate as official,
+      do not invent a domain restriction here.
+    */
+    return candidate?._official === true ||
+      candidate?.authority === "official" ||
+      candidate?.source_role === "official";
   }
 
-  /*
-    Prefer a canonical detail page over a
-    changing PDF URL.
-  */
-  const canonical =
-    normalizeUrl(
-      candidate?.canonical_url
-    );
-
-  if (canonical) {
-    return canonical;
-  }
-
-  const source =
-    normalizeUrl(
-      candidate?.source_url
-    );
-
-  if (source) {
-    return source;
-  }
-
-  /*
-    Last-resort stable identity.
-  */
-  return [
-    candidate?.organization || '',
-    candidate?.title || '',
-    candidate?.type || ''
-  ]
-    .map(
-      x =>
-        String(x)
-          .trim()
-          .toLowerCase()
-    )
-    .join('|');
+  return hostnameMatchesAllowed(url, allowed);
 }
 
+/* -------------------------------------------------------
+   JOB / RECRUITMENT VALIDATION
+------------------------------------------------------- */
 
-/* -------------------------------------------------------------------------- */
-/* Main validation                                                            */
-/* -------------------------------------------------------------------------- */
-
-export function validateCandidate(
-  candidate,
-  source
-) {
+function validateJobCandidate(candidate) {
   const errors = [];
   const warnings = [];
 
-  const type =
-    String(
-      candidate?.type || ''
-    )
-      .trim()
-      .toLowerCase();
+  const officialUrl =
+    candidate?.official_url || candidate?.source_url;
 
-  /*
-    Unknown types are never publishable.
-  */
-  if (
-    !VALID_TYPES.has(type)
-  ) {
-    errors.push(
-      `Unsupported candidate type: ${type || 'empty'}`
-    );
+  const notificationUrl = candidate?.notification_url;
+  const applyUrl = candidate?.apply_url;
+
+  if (!isHttpUrl(officialUrl)) {
+    errors.push("missing_official_url");
   }
 
-  const official =
-    normalizeUrl(
-      candidate?.official_url
-    );
+  if (!isPdfUrl(notificationUrl)) {
+    errors.push("missing_notification_pdf");
+  }
 
-  const notification =
-    normalizeUrl(
-      candidate?.notification_url
-    );
+  if (!isLikelyApplyUrl(applyUrl)) {
+    errors.push("missing_apply_url");
+  }
 
-  const apply =
-    normalizeUrl(
-      candidate?.apply_url
-    );
+  if (sameUrl(notificationUrl, applyUrl)) {
+    errors.push("notification_apply_same_url");
+  }
 
-  const sourceUrl =
-    normalizeUrl(
-      candidate?.source_url
-    );
-
-  const canonical =
-    normalizeUrl(
-      candidate?.canonical_url
-    );
-
-  /* ---------------------------------------------------------------------- */
-  /* Basic validation                                                       */
-  /* ---------------------------------------------------------------------- */
-
-  if (
-    !candidate?.title ||
-    !String(
-      candidate.title
-    ).trim()
-  ) {
-    errors.push(
-      'Missing title'
-    );
+  if (sameUrl(officialUrl, applyUrl)) {
+    errors.push("official_apply_same_url");
   }
 
   if (
-    !sourceUrl
-  ) {
-    errors.push(
-      'Missing valid source URL'
-    );
-  }
-
-  if (
-    source?.role === 'official' &&
-    sourceUrl &&
-    !sameHostOrAllowed(
-      sourceUrl,
-      source.allowed_domains
+    isPdfUrl(notificationUrl) &&
+    NON_NOTIFICATION_PDF_RE.test(
+      decodeURIComponent(notificationUrl).toLowerCase()
     )
   ) {
-    errors.push(
-      'Source URL outside allowed official domain'
-    );
+    errors.push("invalid_notification_pdf");
   }
 
   if (
-    canonical &&
-    source?.role === 'official' &&
-    !sameHostOrAllowed(
-      canonical,
-      source.allowed_domains
+    isPdfUrl(notificationUrl) &&
+    !RECRUITMENT_PDF_RE.test(
+      decodeURIComponent(notificationUrl).toLowerCase()
     )
   ) {
-    errors.push(
-      'Canonical URL outside allowed official domain'
-    );
+    errors.push("weak_recruitment_pdf_signal");
   }
 
-  /* ---------------------------------------------------------------------- */
-  /* Generic page protection                                                */
-  /* ---------------------------------------------------------------------- */
+  const search = candidateSearchText(candidate);
 
   if (
-    sourceUrl &&
-    looksGenericPage(sourceUrl)
-  ) {
-    errors.push(
-      'Generic page cannot be used as update source'
-    );
-  }
-
-  if (
-    looksGenericTitle(
-      candidate?.title
+    !/\b(recruitment|vacancy|vacancies|advertisement|notification|post|posts|employment|selection)\b/i.test(
+      search
     )
   ) {
-    errors.push(
-      'Generic page title cannot be published'
-    );
+    errors.push("weak_recruitment_signal");
   }
 
-  /*
-    A bare organisation homepage cannot be a
-    meaningful update.
-  */
-  if (
-    candidate?.organization &&
-    normalizeComparable(
-      candidate.title
-    ) ===
-    normalizeComparable(
-      candidate.organization
-    )
-  ) {
-    errors.push(
-      'Title is only the organisation name'
-    );
+  if (!hasSpecificTitle(candidate)) {
+    errors.push("generic_title");
   }
 
-  /* ---------------------------------------------------------------------- */
-  /* Old/future URL protection                                              */
-  /* ---------------------------------------------------------------------- */
-
-  const allUrls =
-    [
-      sourceUrl,
-      canonical,
-      official,
-      notification,
-      apply
-    ]
-      .filter(Boolean)
-      .join(' ');
-
-  if (
-    containsClearlyOldYear(
-      allUrls
-    )
-  ) {
-    errors.push(
-      'URL contains an outdated recruitment year'
-    );
+  if (!currentOrPreviousYear(search)) {
+    errors.push("old_year");
   }
 
-  if (
-    containsFutureImpossibleYear(
-      allUrls
-    )
-  ) {
-    errors.push(
-      'URL contains an impossible future year'
-    );
+  if (!hasStrongSourceEvidence(candidate)) {
+    errors.push("weak_source_evidence");
   }
 
-  /* ---------------------------------------------------------------------- */
-  /* Recruitment validation                                                 */
-  /* ---------------------------------------------------------------------- */
-
-  if (
-    JOB_TYPES.has(type)
-  ) {
-    if (!official) {
-      errors.push(
-        'Recruitment item missing official URL'
-      );
-    }
-
-    if (!notification) {
-      errors.push(
-        'Recruitment item missing notification PDF URL'
-      );
-    }
-    else if (
-      !isPdfUrl(notification)
-    ) {
-      errors.push(
-        'Notification URL is not a PDF URL'
-      );
-    }
-    else if (
-      looksNonNotificationPdf(
-        notification,
-        candidate?.title
-      )
-    ) {
-      errors.push(
-        'PDF is not a recruitment notification'
-      );
-    }
-    else if (
-      !looksRecruitmentPdf(
-        notification,
-        candidate?.title
-      )
-    ) {
-      errors.push(
-        'PDF does not contain strong recruitment/advertisement evidence'
-      );
-    }
-
-    if (!apply) {
-      errors.push(
-        'Recruitment item missing apply URL'
-      );
-    }
-    else if (
-      isPdfUrl(apply)
-    ) {
-      errors.push(
-        'Apply URL must not be a PDF'
-      );
-    }
-
-    if (
-      official &&
-      notification &&
-      sameUrl(
-        official,
-        notification
-      )
-    ) {
-      errors.push(
-        'Official URL and notification URL must differ'
-      );
-    }
-
-    if (
-      official &&
-      apply &&
-      sameUrl(
-        official,
-        apply
-      )
-    ) {
-      errors.push(
-        'Official URL and apply URL must differ'
-      );
-    }
-
-    if (
-      notification &&
-      apply &&
-      sameUrl(
-        notification,
-        apply
-      )
-    ) {
-      errors.push(
-        'Notification URL and apply URL must differ'
-      );
-    }
-
-    if (
-      apply &&
-      !isExternalApplyAllowed(
-        apply,
-        source
-      )
-    ) {
-      errors.push(
-        'Invalid application URL'
-      );
-    }
-
-    /*
-      Official URL must belong to official
-      source.
-    */
-    if (
-      source?.role === 'official' &&
-      official &&
-      !sameHostOrAllowed(
-        official,
-        source.allowed_domains
-      )
-    ) {
-      errors.push(
-        'Official URL outside allowed official domain'
-      );
-    }
-
-    /*
-      Notification normally should be official.
-      We keep this as an error for recruitment,
-      because the notification is authoritative.
-    */
-    if (
-      source?.role === 'official' &&
-      notification &&
-      !sameHostOrAllowed(
-        notification,
-        source.allowed_domains
-      )
-    ) {
-      errors.push(
-        'Recruitment notification PDF is outside official domain'
-      );
-    }
-
-    if (
-      apply &&
-      looksGenericCareerPage(
-        apply,
-        candidate?.title
-      )
-    ) {
-      errors.push(
-        'Generic careers page cannot be used as apply URL'
-      );
-    }
-
-    /*
-      Recruitment needs at least one meaningful
-      recruitment signal in the title/evidence.
-    */
-    const recruitmentText =
-      [
-        candidate?.title,
-        candidate?.description,
-        candidate?.official_url,
-        candidate?.notification_url,
-        candidate?.apply_url
-      ]
-        .filter(Boolean)
-        .join(' ');
-
-    if (
-      !RECRUITMENT_PDF_RE.test(
-        recruitmentText
-      ) &&
-      !/\b(?:vacancy|post|posts|recruitment|advertisement|notification|employment)\b/i.test(
-        recruitmentText
-      )
-    ) {
-      errors.push(
-        'Insufficient recruitment-specific evidence'
-      );
-    }
-
-    /*
-      Strong source evidence is mandatory.
-    */
-    if (
-      !hasStrongSourceEvidence(
-        candidate
-      )
-    ) {
-      errors.push(
-        'Insufficient official discovery evidence'
-      );
-    }
-  }
-
-  /* ---------------------------------------------------------------------- */
-  /* Non-recruitment category validation                                     */
-  /* ---------------------------------------------------------------------- */
-
-  if (
-    !JOB_TYPES.has(type) &&
-    VALID_TYPES.has(type)
-  ) {
-    validateCategoryEvidence(
-      candidate,
-      type,
-      errors
-    );
-
-    /*
-      These categories do not need an apply URL,
-      but if notification_url exists and is a PDF,
-      it must not be an administrative PDF.
-    */
-    if (
-      notification &&
-      isPdfUrl(notification) &&
-      looksNonNotificationPdf(
-        notification,
-        candidate?.title
-      )
-    ) {
-      errors.push(
-        'Administrative PDF cannot be used as update evidence'
-      );
-    }
-  }
-
-  /* ---------------------------------------------------------------------- */
-  /* Common apply URL protection                                             */
-  /* ---------------------------------------------------------------------- */
-
-  if (
-    apply &&
-    looksGenericCareerPage(
-      apply,
-      candidate?.title
-    )
-  ) {
-    errors.push(
-      'Generic career page cannot be used as application destination'
-    );
-  }
-
-  if (
-    apply &&
-    containsClearlyOldYear(
-      apply
-    )
-  ) {
-    errors.push(
-      'Application URL belongs to an outdated year'
-    );
-  }
-
-  /*
-    Application URL should not point to a
-    generic home page.
-  */
-  if (
-    apply &&
-    looksGenericPage(apply)
-  ) {
-    errors.push(
-      'Generic page cannot be used as application URL'
-    );
-  }
-
-  /* ---------------------------------------------------------------------- */
-  /* Warnings                                                               */
-  /* ---------------------------------------------------------------------- */
-
-  if (
-    source?.role === 'official' &&
-    apply &&
-    !sameHostOrAllowed(
-      apply,
-      source.allowed_domains
-    )
-  ) {
-    warnings.push(
-      'Application URL is on an external domain'
-    );
-  }
-
-  if (
-    candidate?.last_date &&
-    containsClearlyOldYear(
-      candidate.last_date
-    )
-  ) {
-    warnings.push(
-      'Last-date text contains an old year'
-    );
+  if (!officialUrlIsValid(candidate)) {
+    errors.push("official_domain_not_verified");
   }
 
   return {
-    ok:
-      errors.length === 0,
-
+    ok: errors.length === 0,
     errors,
-    warnings
+    warnings,
   };
 }
 
+/* -------------------------------------------------------
+   NON-JOB CATEGORY VALIDATION
+------------------------------------------------------- */
 
-/* -------------------------------------------------------------------------- */
-/* Confidence scoring                                                        */
-/* -------------------------------------------------------------------------- */
+function validateDocumentCandidate(candidate, type) {
+  const errors = [];
+  const warnings = [];
 
-function calculateConfidence(
-  candidate,
-  source,
-  validation
-) {
-  /*
-    INVALID CANDIDATES CANNOT BE HIGH CONFIDENCE.
-  */
-  if (
-    !validation?.ok
-  ) {
-    return Math.min(
-      59,
-      Math.max(
-        0,
-        source?.role === 'official'
-          ? 40
-          : 15
-      )
-    );
+  const officialUrl =
+    candidate?.official_url || candidate?.source_url;
+
+  const search = candidateSearchText(candidate);
+
+  if (!isHttpUrl(officialUrl)) {
+    errors.push("missing_official_url");
   }
+
+  if (!hasSpecificTitle(candidate)) {
+    errors.push("generic_title");
+  }
+
+  if (isGenericOrAdminPage(candidate)) {
+    errors.push("generic_or_admin_page");
+  }
+
+  if (!currentOrPreviousYear(search)) {
+    errors.push("old_year");
+  }
+
+  if (!hasStrongSourceEvidence(candidate)) {
+    errors.push("weak_source_evidence");
+  }
+
+  if (!officialUrlIsValid(candidate)) {
+    errors.push("official_domain_not_verified");
+  }
+
+  /*
+    Category-specific evidence is mandatory.
+  */
+  if (!hasCategorySignal(candidate, type)) {
+    errors.push(`missing_${type}_signal`);
+  }
+
+  /*
+    If a notification URL exists, it must be a genuine
+    category document. A random RTI / policy PDF is rejected.
+  */
+  if (candidate?.notification_url) {
+    if (!isPdfUrl(candidate.notification_url)) {
+      errors.push("notification_not_pdf");
+    } else if (
+      NON_NOTIFICATION_PDF_RE.test(
+        decodeURIComponent(candidate.notification_url).toLowerCase()
+      )
+    ) {
+      errors.push("non_notification_pdf");
+    }
+  }
+
+  /*
+    If the adapter supplied a document URL, category matching
+    becomes stronger.
+  */
+  if (candidate?.notification_url) {
+    if (!notificationMatchesCategory(candidate, type)) {
+      /*
+        Do not automatically reject when the official page itself
+        contains strong category evidence but the PDF filename is
+        unusually named.
+
+        However, generic/admin PDFs are always rejected above.
+      */
+      if (
+        type === "answer_key" &&
+        !ANSWER_KEY_PDF_RE.test(
+          decodeURIComponent(candidate.notification_url).toLowerCase()
+        )
+      ) {
+        warnings.push("notification_filename_not_explicitly_category_named");
+      } else if (
+        type === "result" &&
+        !RESULT_PDF_RE.test(
+          decodeURIComponent(candidate.notification_url).toLowerCase()
+        )
+      ) {
+        warnings.push("notification_filename_not_explicitly_category_named");
+      } else if (
+        type === "admit_card" &&
+        !ADMIT_PDF_RE.test(
+          decodeURIComponent(candidate.notification_url).toLowerCase()
+        )
+      ) {
+        warnings.push("notification_filename_not_explicitly_category_named");
+      }
+    }
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+  };
+}
+
+/* -------------------------------------------------------
+   MAIN VALIDATION
+------------------------------------------------------- */
+
+export function validateCandidate(candidate = {}) {
+  const type = lower(candidate.type);
+
+  if (!VALID_TYPES.has(type)) {
+    return {
+      ok: false,
+      errors: ["invalid_type"],
+      warnings: [],
+      type,
+    };
+  }
+
+  const baseErrors = [];
+  const baseWarnings = [];
+
+  if (!text(candidate.title)) {
+    baseErrors.push("missing_title");
+  }
+
+  if (!text(candidate.source_name)) {
+    baseErrors.push("missing_source_name");
+  }
+
+  if (isGenericOrAdminPage(candidate)) {
+    baseErrors.push("generic_or_admin_page");
+  }
+
+  let result;
+
+  if (JOB_TYPES.has(type)) {
+    result = validateJobCandidate(candidate);
+  } else if (DOCUMENT_TYPES.has(type)) {
+    result = validateDocumentCandidate(candidate, type);
+  } else {
+    result = {
+      ok: false,
+      errors: ["unsupported_type"],
+      warnings: [],
+    };
+  }
+
+  const errors = [
+    ...new Set([
+      ...baseErrors,
+      ...result.errors,
+    ]),
+  ];
+
+  const warnings = [
+    ...new Set([
+      ...baseWarnings,
+      ...result.warnings,
+    ]),
+  ];
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    type,
+  };
+}
+
+/* -------------------------------------------------------
+   CONFIDENCE
+------------------------------------------------------- */
+
+export function calculateConfidence(candidate = {}, validation = null) {
+  const v =
+    validation ||
+    validateCandidate(candidate);
 
   let score = 0;
 
+  const type = lower(candidate.type);
+
   /*
-    Official source.
+    Official authority
   */
   if (
-    source?.role === 'official'
+    candidate?._official === true ||
+    candidate?.authority === "official" ||
+    candidate?.source_role === "official"
   ) {
-    score += 25;
-  }
-  else {
-    score += 5;
+    score += 30;
   }
 
   /*
-    Strong discovery evidence.
+    Valid official URL
   */
-  if (
-    hasStrongSourceEvidence(
-      candidate
-    )
-  ) {
+  if (officialUrlIsValid(candidate)) {
+    score += 20;
+  }
+
+  /*
+    Evidence
+  */
+  if (getEvidenceScore(candidate) >= 8) {
     score += 15;
+  } else if (getEvidenceScore(candidate) >= 5) {
+    score += 8;
   }
 
   /*
-    Specific title.
+    Specific title
   */
-  if (
-    hasSpecificTitle(
-      candidate
-    )
-  ) {
+  if (hasSpecificTitle(candidate)) {
     score += 10;
   }
 
   /*
-    Official URL.
+    Category evidence
   */
-  if (
-    candidate?.official_url
-  ) {
+  if (DOCUMENT_TYPES.has(type) && hasCategorySignal(candidate, type)) {
     score += 10;
   }
 
   /*
-    Recruitment notification.
+    Job-specific requirements
   */
-  if (
-    JOB_TYPES.has(
-      candidate?.type
-    ) &&
-    candidate?.notification_url &&
-    isPdfUrl(
-      candidate.notification_url
-    ) &&
-    looksRecruitmentPdf(
-      candidate.notification_url,
-      candidate.title
-    )
-  ) {
-    score += 20;
+  if (JOB_TYPES.has(type)) {
+    if (isPdfUrl(candidate.notification_url)) {
+      score += 5;
+    }
+
+    if (isLikelyApplyUrl(candidate.apply_url)) {
+      score += 10;
+    }
+  } else {
+    /*
+      For result/answer-key/admit-card/etc.,
+      a notification PDF is useful but NOT mandatory.
+    */
+    if (isPdfUrl(candidate.notification_url)) {
+      score += 5;
+    }
   }
 
   /*
-    Real application page.
+    Never allow invalid candidates to get a publish-level score.
   */
-  if (
-    JOB_TYPES.has(
-      candidate?.type
-    ) &&
-    candidate?.apply_url &&
-    !isPdfUrl(
-      candidate.apply_url
-    ) &&
-    !looksGenericPage(
-      candidate.apply_url
-    ) &&
-    !looksGenericCareerPage(
-      candidate.apply_url,
-      candidate.title
-    )
-  ) {
-    score += 20;
+  if (!v.ok) {
+    return Math.min(score, 79);
   }
 
   /*
-    Useful job details.
+    Valid candidates can reach 100.
   */
-  if (
-    candidate?.qualification ||
-    candidate?.eligibility
-  ) {
-    score += 5;
+  return Math.min(score, 100);
+}
+
+/* -------------------------------------------------------
+   VERIFICATION
+------------------------------------------------------- */
+
+export function verifyCandidate(candidate = {}) {
+  const validation = validateCandidate(candidate);
+
+  const confidence = calculateConfidence(
+    candidate,
+    validation
+  );
+
+  const isOfficial =
+    candidate?._official === true ||
+    candidate?.authority === "official" ||
+    candidate?.source_role === "official";
+
+  const autoPublishEligible =
+    validation.ok &&
+    isOfficial &&
+    confidence >= 85;
+
+  const status =
+    autoPublishEligible
+      ? "verified"
+      : "verification_required";
+
+  return {
+    ...candidate,
+
+    type: lower(candidate.type),
+
+    verification_status: status,
+
+    confidence_score: confidence,
+
+    autoPublishEligible,
+
+    _verification: {
+      ok: validation.ok,
+      errors: validation.errors,
+      warnings: validation.warnings,
+    },
+
+    _evidence: {
+      authority:
+        isOfficial ? "official" : "unknown",
+
+      evidence_score:
+        getEvidenceScore(candidate),
+
+      category:
+        lower(candidate.type),
+
+      verified_at:
+        new Date().toISOString(),
+    },
+  };
+}
+
+/* -------------------------------------------------------
+   STABLE NOTIFICATION KEY
+------------------------------------------------------- */
+
+export function canonicalNotificationKey(candidate = {}) {
+  const explicit =
+    text(candidate.notification_key);
+
+  if (explicit) {
+    return explicit
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
-  if (
-    candidate?.last_date
-  ) {
-    score += 4;
-  }
+  const source =
+    lower(candidate.source_name);
 
-  if (
-    candidate?.application_start
-  ) {
-    score += 2;
-  }
-
-  if (
-    candidate?.vacancies
-  ) {
-    score += 2;
-  }
-
-  if (
-    candidate?.selection_process
-  ) {
-    score += 2;
-  }
-
-  /*
-    Category-specific evidence.
-  */
-  if (
-    candidate?.type === 'admit_card' &&
-    looksAdmitEvidence(candidate)
-  ) {
-    score += 8;
-  }
-
-  if (
-    candidate?.type === 'result' &&
-    looksResultEvidence(candidate)
-  ) {
-    score += 8;
-  }
-
-  if (
-    candidate?.type === 'answer_key' &&
-    looksAnswerKeyEvidence(candidate)
-  ) {
-    score += 8;
-  }
-
-  if (
-    candidate?.type === 'syllabus' &&
-    looksSyllabusEvidence(candidate)
-  ) {
-    score += 6;
-  }
-
-  if (
-    candidate?.type === 'admission' &&
-    looksAdmissionEvidence(candidate)
-  ) {
-    score += 6;
-  }
-
-  /*
-    Warnings reduce confidence.
-  */
-  score -=
-    Math.min(
-      10,
-      (
-        validation?.warnings?.length ||
-        0
-      ) * 2
+  const canonical =
+    text(
+      candidate.canonical_url ||
+      candidate.notification_url ||
+      candidate.official_url ||
+      candidate.source_url
     );
 
-  return Math.max(
-    0,
-    Math.min(
-      100,
-      score
-    )
+  const title =
+    normalizeSpaces(candidate.title)
+      .toLowerCase();
+
+  /*
+    Prefer a stable canonical URL.
+  */
+  if (canonical) {
+    try {
+      const u = new URL(canonical);
+
+      u.hash = "";
+
+      /*
+        Remove tracking parameters.
+      */
+      const removeParams = [
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "fbclid",
+        "gclid",
+      ];
+
+      for (const p of removeParams) {
+        u.searchParams.delete(p);
+      }
+
+      return `${source}|${u.toString().replace(/\/$/, "")}`;
+    } catch {
+      // fall through
+    }
+  }
+
+  return `${source}|${title}`;
+}
+
+/* -------------------------------------------------------
+   STABLE FINGERPRINT
+------------------------------------------------------- */
+
+export function stableFingerprint(candidate = {}) {
+  const stable = {
+    type: lower(candidate.type),
+    title: normalizeSpaces(candidate.title).toLowerCase(),
+    organization: normalizeSpaces(candidate.organization).toLowerCase(),
+    category: normalizeSpaces(candidate.category).toLowerCase(),
+
+    qualification:
+      normalizeSpaces(candidate.qualification).toLowerCase(),
+
+    vacancies:
+      normalizeSpaces(candidate.vacancies).toLowerCase(),
+
+    age_limit:
+      normalizeSpaces(candidate.age_limit).toLowerCase(),
+
+    fee:
+      normalizeSpaces(candidate.fee).toLowerCase(),
+
+    selection_process:
+      normalizeSpaces(candidate.selection_process).toLowerCase(),
+
+    salary:
+      normalizeSpaces(candidate.salary).toLowerCase(),
+
+    application_start:
+      normalizeSpaces(candidate.application_start).toLowerCase(),
+
+    last_date:
+      normalizeSpaces(candidate.last_date).toLowerCase(),
+
+    exam_date:
+      normalizeSpaces(candidate.exam_date).toLowerCase(),
+
+    official_url:
+      normalizeUrlForFingerprint(candidate.official_url),
+
+    notification_url:
+      normalizeUrlForFingerprint(candidate.notification_url),
+
+    apply_url:
+      normalizeUrlForFingerprint(candidate.apply_url),
+  };
+
+  return JSON.stringify(stable);
+}
+
+function normalizeUrlForFingerprint(value) {
+  const u = safeUrl(value);
+
+  if (!u) {
+    return "";
+  }
+
+  u.hash = "";
+
+  [
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_term",
+    "utm_content",
+    "fbclid",
+    "gclid",
+  ].forEach(p => u.searchParams.delete(p));
+
+  return u.toString().replace(/\/$/, "").toLowerCase();
+}
+
+/* -------------------------------------------------------
+   PUBLIC PUBLISH CHECK
+------------------------------------------------------- */
+
+export function canAutoPublish(candidate = {}) {
+  const result = verifyCandidate(candidate);
+
+  return (
+    result.autoPublishEligible === true &&
+    result.verification_status === "verified"
   );
 }
 
+/* -------------------------------------------------------
+   DEBUG-FRIENDLY SUMMARY
+------------------------------------------------------- */
 
-/* -------------------------------------------------------------------------- */
-/* Final verification                                                         */
-/* -------------------------------------------------------------------------- */
-
-export async function verifyCandidate(
-  candidate,
-  source
-) {
-  const validation =
-    validateCandidate(
-      candidate,
-      source
-    );
-
-  /*
-    Stable fingerprint.
-    Volatile discovery fields are intentionally
-    excluded so that the same item does not create
-    fake revisions.
-  */
-  const fingerprintPayload = {
-    title:
-      candidate?.title || '',
-
-    organization:
-      candidate?.organization || '',
-
-    type:
-      candidate?.type || '',
-
-    canonical_key:
-      canonicalNotificationKey(
-        candidate
-      ),
-
-    source_url:
-      normalizeUrl(
-        candidate?.source_url
-      ),
-
-    official_url:
-      normalizeUrl(
-        candidate?.official_url
-      ),
-
-    notification_url:
-      normalizeUrl(
-        candidate?.notification_url
-      ),
-
-    apply_url:
-      normalizeUrl(
-        candidate?.apply_url
-      )
-  };
-
-  const fingerprint =
-    await sha256Hex(
-      JSON.stringify(
-        fingerprintPayload
-      )
-    );
-
-  const confidence =
-    calculateConfidence(
-      candidate,
-      source,
-      validation
-    );
-
-  /*
-    Automatic publication requires:
-      - complete validation
-      - confidence >= 85
-      - supported type
-      - official source
-  */
-  const autoPublishEligible =
-    validation.ok &&
-    source?.role === 'official' &&
-    VALID_TYPES.has(
-      candidate?.type
-    ) &&
-    confidence >= 85;
+export function verificationSummary(candidate = {}) {
+  const result = verifyCandidate(candidate);
 
   return {
-    ...validation,
-
-    fingerprint,
-
-    confidence,
-
-    autoPublishEligible
+    title: candidate.title || "",
+    type: candidate.type || "",
+    ok: result._verification.ok,
+    status: result.verification_status,
+    confidence_score: result.confidence_score,
+    errors: result._verification.errors,
+    warnings: result._verification.warnings,
   };
-        }
+}
