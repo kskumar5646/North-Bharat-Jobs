@@ -349,39 +349,10 @@ const GENERIC_TITLE_RE = new RegExp(
 );
 
 const ADMIN_PAGE_RE =
-  /\b(
-    rti|
-    right\s+to\s+information|
-    policy|
-    policies|
-    tender|
-    annual\s+report|
-    affidavit|
-    certificate|
-    proforma|
-    forms?|
-    manual|
-    guidelines?|
-    rules?|
-    terms?|
-    privacy|
-    contact\s+us|
-    about\s+us|
-    organisation|
-    organization|
-    citizen\s+charter|
-    press\s+release
-  )\b/ix;
+  /\b(rti|right\s+to\s+information|policy|policies|tender|annual\s+report|affidavit|certificate|proforma|forms?|manual|guidelines?|rules?|terms?|privacy|contact\s+us|about\s+us|organisation|organization|citizen\s+charter|press\s+release)\b/i;
 
 const GENERIC_CAREER_RE =
-  /\b(
-    careers?|
-    career\s+opportunities|
-    work\s+with\s+us|
-    join\s+us|
-    employment\s+section
-  )\b/ix;
-
+  /\b(careers?|career\s+opportunities|work\s+with\s+us|join\s+us|employment\s+section)\b/i;
 /*
   JavaScript does not support x-mode regex flags.
   Therefore create safe equivalent regexes.
