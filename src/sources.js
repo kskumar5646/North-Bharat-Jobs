@@ -8,21 +8,26 @@ import {
   North Bharat Jobs
   Official-source discovery engine
 
-  IMPORTANT
-  ---------
+  Rules:
   - Never invent URLs.
-  - Only official-domain URLs are accepted for official sources.
-  - Homepage / generic pages are never published.
+  - Only real HTTP/HTTPS URLs are accepted.
+  - Official sources are restricted to configured official domains.
+  - Section/listing pages may be crawled.
+  - Generic pages are not published as records.
   - Administrative/static pages are blocked.
   - Old-year material is blocked.
   - Recruitment requires:
-      official detail page
-      notification PDF
-      real application URL
-      three distinct URLs
-  - Category-specific evidence is mandatory.
-  - Discovery uses multi-level crawling so that
-    official listing/index pages can lead to actual notices.
+      1. specific recruitment title
+      2. recruitment evidence
+      3. notification PDF
+      4. real application URL
+      5. three distinct URLs
+  - Non-job categories require category-specific evidence.
+  - Multi-level crawling:
+      homepage
+        -> section/listing
+          -> notice/detail
+            -> candidate
 */
 
 /* -------------------------------------------------------------------------- */
@@ -35,11 +40,8 @@ const MAX_DEPTH = 2;
 const MAX_LINKS_PER_PAGE = 180;
 const FETCH_TIMEOUT_MS = 12000;
 
-const CURRENT_YEAR =
-  new Date().getUTCFullYear();
-
-const MIN_ACCEPTABLE_YEAR =
-  CURRENT_YEAR - 1;
+const CURRENT_YEAR = new Date().getUTCFullYear();
+const MIN_ACCEPTABLE_YEAR = CURRENT_YEAR - 1;
 
 /* -------------------------------------------------------------------------- */
 /* Category words                                                             */
@@ -73,7 +75,7 @@ const WORDS = {
 /* -------------------------------------------------------------------------- */
 
 const APPLY =
-  /\b(apply\s*(?:online|now|here)|online\s*application|application\s*(?:form|portal|link)|registration\s*(?:link|portal|form)?|register\s*(?:online|now)|apply\s*link|online\s*registration|candidate\s*registration|application\s*portal)\b/i;
+  /\b(apply\s*(?:online|now|here)?|online\s*application|application\s*(?:form|portal|link)|registration\s*(?:link|portal|form)?|register\s*(?:online|now)|apply\s*link|online\s*registration|candidate\s*registration|application\s*portal)\b/i;
 
 /* -------------------------------------------------------------------------- */
 /* Recruitment notification signals                                           */
@@ -162,17 +164,12 @@ function compactText(value = '') {
 /* -------------------------------------------------------------------------- */
 
 function isHttp(value) {
-  return Boolean(
-    normalizeUrl(value)
-  );
+  return Boolean(normalizeUrl(value));
 }
 
 function sameUrl(a, b) {
-  const x =
-    normalizeUrl(a);
-
-  const y =
-    normalizeUrl(b);
+  const x = normalizeUrl(a);
+  const y = normalizeUrl(b);
 
   if (!x || !y) {
     return false;
@@ -183,78 +180,37 @@ function sameUrl(a, b) {
 
 function urlHasOldYear(url = '') {
   const matches =
-    String(url).match(
-      /\b(19|20)\d{2}\b/g
-    );
+    String(url).match(/\b(19|20)\d{2}\b/g);
 
   if (!matches?.length) {
     return false;
   }
 
   return matches.some(year => {
-    const y =
-      Number(year);
-
-    return (
-      y < MIN_ACCEPTABLE_YEAR
-    );
+    const y = Number(year);
+    return y < MIN_ACCEPTABLE_YEAR;
   });
 }
 
-function hasCurrentOrRecentYear(value = '') {
-  const years =
-    String(value).match(
-      /\b(19|20)\d{2}\b/g
-    ) || [];
-
-  if (!years.length) {
-    return false;
-  }
-
-  return years.some(year => {
-    const y =
-      Number(year);
-
-    return (
-      y >= MIN_ACCEPTABLE_YEAR
-    );
-  });
-}
-
-function isBlockedPath(
-  url = '',
-  text = ''
-) {
-  const value =
-    normalizedText(
-      `${url} ${text}`
-    );
-
-  return BLOCKED_FILE.test(
-    value
-  );
+function isBlockedPath(url = '', text = '') {
+  const value = normalizedText(`${url} ${text}`);
+  return BLOCKED_FILE.test(value);
 }
 
 /* -------------------------------------------------------------------------- */
 /* Generic page detection                                                     */
 /* -------------------------------------------------------------------------- */
 
-function isGenericPage(
-  url = '',
-  text = ''
-) {
-  const title =
-    cleanTitle(text);
+function isGenericPage(url = '', text = '') {
+  const title = cleanTitle(text);
 
   try {
-    const parsed =
-      new URL(url);
+    const parsed = new URL(url);
 
-    const path =
-      parsed.pathname
-        .replace(/\/+/g, '/')
-        .replace(/\/$/, '')
-        .toLowerCase();
+    const path = parsed.pathname
+      .replace(/\/+/g, '/')
+      .replace(/\/$/, '')
+      .toLowerCase();
 
     if (
       path === '' ||
@@ -266,28 +222,6 @@ function isGenericPage(
     ) {
       return true;
     }
-  } catch {
-    /* ignore */
-  }
-
-  if (
-    GENERIC_TITLE.test(title)
-  ) {
-    return true;
-  }
-
-  if (
-    GENERIC_ORG_TITLE.test(title)
-  ) {
-    return true;
-  }
-
-  try {
-    const parsed =
-      new URL(url);
-
-    const path =
-      parsed.pathname.toLowerCase();
 
     if (
       /\/(about|contact|feedback|privacy|terms|disclaimer|rti|login|signin)(\/|$)/i.test(
@@ -297,20 +231,22 @@ function isGenericPage(
       return true;
     }
   } catch {
-    /* ignore */
+    return true;
+  }
+
+  if (GENERIC_TITLE.test(title)) {
+    return true;
+  }
+
+  if (GENERIC_ORG_TITLE.test(title)) {
+    return true;
   }
 
   return false;
 }
 
-function looksLikeGenericCareerPage(
-  url = '',
-  text = ''
-) {
-  const value =
-    normalizedText(
-      `${url} ${text}`
-    );
+function looksLikeGenericCareerPage(url = '', text = '') {
+  const value = normalizedText(`${url} ${text}`);
 
   return (
     /\bcareers?\b/.test(value) &&
@@ -322,14 +258,8 @@ function looksLikeGenericCareerPage(
   );
 }
 
-function looksLikeLoginOnly(
-  url = '',
-  text = ''
-) {
-  const value =
-    normalizedText(
-      `${url} ${text}`
-    );
+function looksLikeLoginOnly(url = '', text = '') {
+  const value = normalizedText(`${url} ${text}`);
 
   return (
     /\blogin\b|\bsign[\s-]?in\b/.test(value) &&
@@ -343,58 +273,36 @@ function looksLikeLoginOnly(
 /* Specific title detection                                                   */
 /* -------------------------------------------------------------------------- */
 
-function hasSpecificTitle(
-  title = '',
-  organization = ''
-) {
-  const clean =
-    compactText(title);
+function hasSpecificTitle(title = '', organization = '') {
+  const clean = compactText(title);
+  const org = compactText(organization);
 
-  const org =
-    compactText(organization);
-
-  if (
-    !clean ||
-    clean.length < 8
-  ) {
+  if (!clean || clean.length < 8) {
     return false;
   }
 
-  if (
-    GENERIC_TITLE.test(clean)
-  ) {
+  if (GENERIC_TITLE.test(clean)) {
     return false;
   }
 
-  if (
-    org &&
-    clean === org
-  ) {
+  if (org && clean === org) {
     return false;
   }
 
   const identifying =
     /\b(20\d{2}|post|posts|exam|examination|recruitment|vacanc(?:y|ies)|admit|hall|result|merit|selection|answer|response|syllabus|admission|entrance|scholarship|candidate|grade|group|class|officer|assistant|teacher|engineer|clerk|constable|inspector|technician|staff|department|course|programme|program|notice|notification|advertisement|corrigendum)\b/i;
 
-  return identifying.test(
-    clean
-  );
+  return identifying.test(clean);
 }
 
 /* -------------------------------------------------------------------------- */
 /* Link parser                                                                */
 /* -------------------------------------------------------------------------- */
 
-function linksOf(
-  html,
-  base
-) {
+function linksOf(html, base) {
   const out = [];
 
-  if (
-    !html ||
-    !base
-  ) {
+  if (!html || !base) {
     return out;
   }
 
@@ -408,8 +316,7 @@ function linksOf(
     out.length < MAX_LINKS
   ) {
     try {
-      const rawHref =
-        match[1]?.trim();
+      const rawHref = match[1]?.trim();
 
       if (!rawHref) {
         continue;
@@ -424,25 +331,15 @@ function linksOf(
         continue;
       }
 
-      const url =
-        normalizeUrl(
-          new URL(
-            rawHref,
-            base
-          ).toString()
-        );
+      const url = normalizeUrl(
+        new URL(rawHref, base).toString()
+      );
 
       if (!url) {
         continue;
       }
 
-      const text =
-        textOf(
-          match[2]
-        ).slice(
-          0,
-          500
-        );
+      const text = textOf(match[2]).slice(0, 500);
 
       out.push({
         url,
@@ -462,88 +359,82 @@ function linksOf(
 
 function linkPriority(link) {
   const value =
-    normalizedText(
-      `${link.text} ${link.url}`
-    );
+    normalizedText(`${link.text} ${link.url}`);
 
   let score = 0;
 
-  if (
-    WORDS.job.test(value)
-  ) {
+  if (WORDS.job.test(value)) {
     score += 50;
   }
 
-  if (
-    WORDS.admit.test(value)
-  ) {
+  if (WORDS.admit.test(value)) {
     score += 45;
   }
 
-  if (
-    WORDS.result.test(value)
-  ) {
+  if (WORDS.result.test(value)) {
     score += 45;
   }
 
-  if (
-    WORDS.answer.test(value)
-  ) {
+  if (WORDS.answer.test(value)) {
     score += 45;
   }
 
-  if (
-    WORDS.syllabus.test(value)
-  ) {
+  if (WORDS.syllabus.test(value)) {
     score += 40;
   }
 
-  if (
-    WORDS.admission.test(value)
-  ) {
+  if (WORDS.admission.test(value)) {
     score += 40;
   }
 
-  if (
-    WORDS.scholarship.test(value)
-  ) {
+  if (WORDS.scholarship.test(value)) {
     score += 35;
   }
 
-  if (
-    NOTIFICATION_SIGNAL.test(value)
-  ) {
+  if (NOTIFICATION_SIGNAL.test(value)) {
     score += 25;
   }
 
-  if (
-    APPLY.test(value)
-  ) {
+  if (APPLY.test(value)) {
     score += 20;
   }
 
-  if (
-    isPdfUrl(link.url)
-  ) {
+  if (isPdfUrl(link.url)) {
     score += 10;
   }
 
   return score;
 }
 
-function isUsefulCrawlLink(
-  link,
-  source
-) {
-  if (
-    !link?.url
-  ) {
+/* -------------------------------------------------------------------------- */
+/* Crawl link filtering                                                       */
+/* -------------------------------------------------------------------------- */
+
+/*
+  IMPORTANT:
+  Section/listing links such as:
+
+    Recruitment
+    Notifications
+    Results
+    Admit Card
+    Answer Key
+    Syllabus
+    Careers
+    Latest News
+
+  MUST be allowed into the crawler.
+
+  They are not final records. They are navigation pages that can lead to
+  actual notices.
+*/
+
+function isUsefulCrawlLink(link, source) {
+  if (!link?.url) {
     return false;
   }
 
-  if (
-    !isHttp(link.url)
-  ) {
+  if (!isHttp(link.url)) {
     return false;
   }
 
@@ -557,29 +448,33 @@ function isUsefulCrawlLink(
     return false;
   }
 
-  if (
-    isBlockedPath(
-      link.url,
-      link.text
-    )
-  ) {
+  /*
+    Block only clearly administrative/static paths.
+    Do NOT use isGenericPage() here.
+  */
+
+  if (isBlockedPath(link.url, link.text)) {
     return false;
   }
 
-  if (
-    urlHasOldYear(
-      link.url
-    )
-  ) {
+  if (urlHasOldYear(link.url)) {
     return false;
   }
 
-  if (
-    isGenericPage(
-      link.url,
-      link.text
-    )
-  ) {
+  try {
+    const parsed = new URL(link.url);
+    const path = parsed.pathname
+      .replace(/\/+/g, '/')
+      .toLowerCase();
+
+    if (
+      /\/(about|contact|feedback|privacy|terms|disclaimer|rti|login|signin)(\/|$)/i.test(
+        path
+      )
+    ) {
+      return false;
+    }
+  } catch {
     return false;
   }
 
@@ -590,88 +485,62 @@ function isUsefulCrawlLink(
 /* Fetch helper                                                               */
 /* -------------------------------------------------------------------------- */
 
-async function fetchWithTimeout(
-  url
-) {
-  const controller =
-    new AbortController();
+async function fetchWithTimeout(url) {
+  const controller = new AbortController();
 
-  const timer =
-    setTimeout(
-      () =>
-        controller.abort(),
-      FETCH_TIMEOUT_MS
-    );
+  const timer = setTimeout(
+    () => controller.abort(),
+    FETCH_TIMEOUT_MS
+  );
 
   try {
-    const response =
-      await fetch(
-        url,
-        {
-          method: 'GET',
-          redirect: 'follow',
-          cache: 'no-store',
-          signal:
-            controller.signal,
+    const response = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      cache: 'no-store',
+      signal: controller.signal,
 
-          headers: {
-            'User-Agent':
-              'NorthBharatJobs/1.0 (+official-source-monitor)',
+      headers: {
+        'User-Agent':
+          'NorthBharatJobs/1.0 (+official-source-monitor)',
 
-            Accept:
-              'text/html,application/xhtml+xml,application/pdf;q=0.9,*/*;q=0.5',
+        Accept:
+          'text/html,application/xhtml+xml,application/pdf;q=0.9,*/*;q=0.5',
 
-            'Accept-Language':
-              'en-IN,en;q=0.9'
-          }
-        }
-      );
+        'Accept-Language':
+          'en-IN,en;q=0.9'
+      }
+    });
 
     const contentType =
-      response.headers.get(
-        'content-type'
-      ) || '';
+      response.headers.get('content-type') || '';
 
     const isTextResponse =
       /text\/html|application\/xhtml\+xml|text\/plain/i.test(
         contentType
       );
 
-    const body =
-      isTextResponse
-        ? await response.text()
-        : '';
+    const body = isTextResponse
+      ? await response.text()
+      : '';
 
     return {
-      ok:
-        response.ok,
-
-      status:
-        response.status,
-
+      ok: response.ok,
+      status: response.status,
       body,
-
       contentType,
 
       finalUrl:
         normalizeUrl(
-          response.url ||
-          url
+          response.url || url
         ) || url,
 
       retryAfter:
-        response.headers.get(
-          'retry-after'
-        ),
+        response.headers.get('retry-after'),
 
       isPdf:
-        /application\/pdf/i.test(
-          contentType
-        ) ||
-        isPdfUrl(
-          response.url ||
-          url
-        )
+        /application\/pdf/i.test(contentType) ||
+        isPdfUrl(response.url || url)
     };
   } catch (error) {
     return {
@@ -685,14 +554,11 @@ async function fetchWithTimeout(
 
       error:
         String(
-          error?.message ||
-          error
+          error?.message || error
         )
     };
   } finally {
-    clearTimeout(
-      timer
-    );
+    clearTimeout(timer);
   }
 }
 
@@ -700,21 +566,13 @@ async function fetchWithTimeout(
 /* Category classification                                                    */
 /* -------------------------------------------------------------------------- */
 
-function classify(
-  title,
-  body,
-  links = []
-) {
-  const titleText =
-    compactText(title);
+function classify(title, body, links = []) {
+  const titleText = compactText(title);
 
   const linkText =
     compactText(
       links
-        .slice(
-          0,
-          100
-        )
+        .slice(0, 100)
         .map(
           link =>
             `${link.text} ${link.url}`
@@ -722,136 +580,65 @@ function classify(
         .join(' ')
     );
 
-  /*
-    Title gets priority.
-  */
-
-  if (
-    WORDS.admit.test(
-      titleText
-    )
-  ) {
+  if (WORDS.admit.test(titleText)) {
     return 'admit_card';
   }
 
-  if (
-    WORDS.answer.test(
-      titleText
-    )
-  ) {
+  if (WORDS.answer.test(titleText)) {
     return 'answer_key';
   }
 
-  if (
-    WORDS.result.test(
-      titleText
-    )
-  ) {
+  if (WORDS.result.test(titleText)) {
     return 'result';
   }
 
-  if (
-    WORDS.syllabus.test(
-      titleText
-    )
-  ) {
+  if (WORDS.syllabus.test(titleText)) {
     return 'syllabus';
   }
 
-  if (
-    WORDS.admission.test(
-      titleText
-    )
-  ) {
+  if (WORDS.admission.test(titleText)) {
     return 'admission';
   }
 
-  if (
-    WORDS.scholarship.test(
-      titleText
-    )
-  ) {
+  if (WORDS.scholarship.test(titleText)) {
     return 'scholarship';
   }
 
-  if (
-    WORDS.job.test(
-      titleText
-    )
-  ) {
+  if (WORDS.job.test(titleText)) {
     return 'job';
   }
 
-  /*
-    Then link evidence.
-  */
-
-  if (
-    WORDS.admit.test(
-      linkText
-    )
-  ) {
+  if (WORDS.admit.test(linkText)) {
     return 'admit_card';
   }
 
-  if (
-    WORDS.answer.test(
-      linkText
-    )
-  ) {
+  if (WORDS.answer.test(linkText)) {
     return 'answer_key';
   }
 
-  if (
-    WORDS.result.test(
-      linkText
-    )
-  ) {
+  if (WORDS.result.test(linkText)) {
     return 'result';
   }
 
-  if (
-    WORDS.syllabus.test(
-      linkText
-    )
-  ) {
+  if (WORDS.syllabus.test(linkText)) {
     return 'syllabus';
   }
 
-  if (
-    WORDS.admission.test(
-      linkText
-    )
-  ) {
+  if (WORDS.admission.test(linkText)) {
     return 'admission';
   }
 
-  if (
-    WORDS.scholarship.test(
-      linkText
-    )
-  ) {
+  if (WORDS.scholarship.test(linkText)) {
     return 'scholarship';
   }
 
-  if (
-    WORDS.job.test(
-      linkText
-    )
-  ) {
+  if (WORDS.job.test(linkText)) {
     return 'job';
   }
-
-  /*
-    Finally use body evidence.
-  */
 
   const bodyText =
     normalizedText(
-      body.slice(
-        0,
-        16000
-      )
+      body.slice(0, 16000)
     );
 
   if (
@@ -924,10 +711,7 @@ function classify(
 /* Date extraction                                                            */
 /* -------------------------------------------------------------------------- */
 
-function extractDate(
-  text,
-  labels
-) {
+function extractDate(text, labels) {
   const month =
     '(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)';
 
@@ -948,15 +732,10 @@ function extractDate(
     )
   ];
 
-  for (
-    const pattern of patterns
-  ) {
-    const match =
-      text.match(pattern);
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
 
-    if (
-      match?.[1]
-    ) {
+    if (match?.[1]) {
       return match[1].trim();
     }
   }
@@ -965,22 +744,14 @@ function extractDate(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Recruitment evidence                                                      */
+/* Recruitment evidence                                                       */
 /* -------------------------------------------------------------------------- */
 
-function recruitmentEvidence(
-  title,
-  body,
-  links
-) {
-  const titleText =
-    normalizedText(title);
-
-  const bodyText =
-    normalizedText(body);
+function recruitmentEvidence(title, body, links) {
+  const titleText = normalizedText(title);
+  const bodyText = normalizedText(body);
 
   let score = 0;
-
   const evidence = [];
 
   if (
@@ -989,9 +760,7 @@ function recruitmentEvidence(
     )
   ) {
     score += 3;
-    evidence.push(
-      'recruitment-title'
-    );
+    evidence.push('recruitment-title');
   }
 
   if (
@@ -1033,9 +802,7 @@ function recruitmentEvidence(
     )
   ) {
     score += 2;
-    evidence.push(
-      'last-date'
-    );
+    evidence.push('last-date');
   }
 
   if (
@@ -1044,9 +811,7 @@ function recruitmentEvidence(
     )
   ) {
     score += 2;
-    evidence.push(
-      'eligibility'
-    );
+    evidence.push('eligibility');
   }
 
   if (
@@ -1055,9 +820,7 @@ function recruitmentEvidence(
     )
   ) {
     score += 1;
-    evidence.push(
-      'selection-process'
-    );
+    evidence.push('selection-process');
   }
 
   if (
@@ -1066,48 +829,34 @@ function recruitmentEvidence(
     )
   ) {
     score += 1;
-    evidence.push(
-      'fee'
-    );
+    evidence.push('fee');
   }
 
   const hasNotification =
-    links.some(
-      link => {
-        if (
-          !isPdfUrl(
-            link.url
-          )
-        ) {
-          return false;
-        }
-
-        if (
-          urlHasOldYear(
-            link.url
-          )
-        ) {
-          return false;
-        }
-
-        if (
-          isBlockedPath(
-            link.url,
-            link.text
-          )
-        ) {
-          return false;
-        }
-
-        return NOTIFICATION_SIGNAL.test(
-          `${link.text} ${link.url}`
-        );
+    links.some(link => {
+      if (!isPdfUrl(link.url)) {
+        return false;
       }
-    );
 
-  if (
-    hasNotification
-  ) {
+      if (urlHasOldYear(link.url)) {
+        return false;
+      }
+
+      if (
+        isBlockedPath(
+          link.url,
+          link.text
+        )
+      ) {
+        return false;
+      }
+
+      return NOTIFICATION_SIGNAL.test(
+        `${link.text} ${link.url}`
+      );
+    });
+
+  if (hasNotification) {
     score += 3;
     evidence.push(
       'recruitment-notification-pdf'
@@ -1115,37 +864,23 @@ function recruitmentEvidence(
   }
 
   const hasApply =
-    links.some(
-      link => {
-        if (
-          isPdfUrl(
-            link.url
-          )
-        ) {
-          return false;
-        }
-
-        if (
-          urlHasOldYear(
-            link.url
-          )
-        ) {
-          return false;
-        }
-
-        return APPLY.test(
-          `${link.text} ${link.url}`
-        );
+    links.some(link => {
+      if (isPdfUrl(link.url)) {
+        return false;
       }
-    );
 
-  if (
-    hasApply
-  ) {
+      if (urlHasOldYear(link.url)) {
+        return false;
+      }
+
+      return APPLY.test(
+        `${link.text} ${link.url}`
+      );
+    });
+
+  if (hasApply) {
     score += 3;
-    evidence.push(
-      'current-apply-link'
-    );
+    evidence.push('current-apply-link');
   }
 
   return {
@@ -1165,24 +900,17 @@ function categoryEvidence(
   links,
   sourceUrl
 ) {
-  const titleText =
-    normalizedText(title);
+  const titleText = normalizedText(title);
 
   const bodyText =
     normalizedText(
-      body.slice(
-        0,
-        16000
-      )
+      body.slice(0, 16000)
     );
 
   const linkText =
     normalizedText(
       links
-        .slice(
-          0,
-          120
-        )
+        .slice(0, 120)
         .map(
           link =>
             `${link.text} ${link.url}`
@@ -1191,7 +919,6 @@ function categoryEvidence(
     );
 
   const evidence = [];
-
   let score = 0;
 
   if (
@@ -1208,9 +935,7 @@ function categoryEvidence(
     };
   }
 
-  if (
-    type === 'admit_card'
-  ) {
+  if (type === 'admit_card') {
     const strongTitle =
       /\badmit\s*card\b|\bhall\s*ticket\b|\bcall\s*letter\b|\be[-\s]?admit\b/i.test(
         titleText
@@ -1226,25 +951,15 @@ function categoryEvidence(
         `${titleText} ${bodyText}`
       );
 
-    if (
-      strongTitle
-    ) {
+    if (strongTitle) {
       score += 7;
-      evidence.push(
-        'admit-title'
-      );
-    } else if (
-      strongLink
-    ) {
+      evidence.push('admit-title');
+    } else if (strongLink) {
       score += 6;
-      evidence.push(
-        'admit-link'
-      );
+      evidence.push('admit-link');
     }
 
-    if (
-      operational
-    ) {
+    if (operational) {
       score += 3;
       evidence.push(
         'admit-operational-context'
@@ -1254,19 +969,14 @@ function categoryEvidence(
     return {
       ok:
         score >= 8 &&
-        (strongTitle ||
-          strongLink) &&
+        (strongTitle || strongLink) &&
         operational,
-
       score,
-
       evidence
     };
   }
 
-  if (
-    type === 'result'
-  ) {
+  if (type === 'result') {
     const strongTitle =
       /\b(result|merit\s*list|selection\s*list|short\s*list|shortlist|final\s*result|provisional\s*result|selected\s*candidates|qualified\s*candidates|marks\s*list|score\s*card)\b/i.test(
         titleText
@@ -1282,25 +992,15 @@ function categoryEvidence(
         `${titleText} ${bodyText}`
       );
 
-    if (
-      strongTitle
-    ) {
+    if (strongTitle) {
       score += 7;
-      evidence.push(
-        'result-title'
-      );
-    } else if (
-      strongLink
-    ) {
+      evidence.push('result-title');
+    } else if (strongLink) {
       score += 6;
-      evidence.push(
-        'result-link'
-      );
+      evidence.push('result-link');
     }
 
-    if (
-      operational
-    ) {
+    if (operational) {
       score += 3;
       evidence.push(
         'result-operational-context'
@@ -1310,19 +1010,14 @@ function categoryEvidence(
     return {
       ok:
         score >= 8 &&
-        (strongTitle ||
-          strongLink) &&
+        (strongTitle || strongLink) &&
         operational,
-
       score,
-
       evidence
     };
   }
 
-  if (
-    type === 'answer_key'
-  ) {
+  if (type === 'answer_key') {
     const strongTitle =
       /\b(answer\s*key|response\s*sheet|provisional\s*answer|final\s*answer\s*key|answer\s*sheet)\b/i.test(
         titleText
@@ -1338,25 +1033,19 @@ function categoryEvidence(
         `${titleText} ${bodyText}`
       );
 
-    if (
-      strongTitle
-    ) {
+    if (strongTitle) {
       score += 7;
       evidence.push(
         'answer-key-title'
       );
-    } else if (
-      strongLink
-    ) {
+    } else if (strongLink) {
       score += 6;
       evidence.push(
         'answer-key-link'
       );
     }
 
-    if (
-      operational
-    ) {
+    if (operational) {
       score += 3;
       evidence.push(
         'answer-key-operational-context'
@@ -1366,19 +1055,14 @@ function categoryEvidence(
     return {
       ok:
         score >= 8 &&
-        (strongTitle ||
-          strongLink) &&
+        (strongTitle || strongLink) &&
         operational,
-
       score,
-
       evidence
     };
   }
 
-  if (
-    type === 'syllabus'
-  ) {
+  if (type === 'syllabus') {
     const strongTitle =
       /\bsyllabus\b|\bscheme\s*(?:and|&)\s*syllabus\b|\bexam\s*scheme\b|\bscheme\s*of\s*examination\b/i.test(
         titleText
@@ -1391,31 +1075,18 @@ function categoryEvidence(
 
     const specificSubject =
       /\b(exam|examination|post|subject|paper|course|group|class|grade|recruitment|technical|non[-\s]?technical|teacher|officer|assistant|engineer|clerk|constable|department)\b/i.test(
-        `${titleText} ${bodyText.slice(
-          0,
-          9000
-        )}`
+        `${titleText} ${bodyText.slice(0, 9000)}`
       );
 
-    if (
-      strongTitle
-    ) {
+    if (strongTitle) {
       score += 7;
-      evidence.push(
-        'syllabus-title'
-      );
-    } else if (
-      strongLink
-    ) {
+      evidence.push('syllabus-title');
+    } else if (strongLink) {
       score += 6;
-      evidence.push(
-        'syllabus-link'
-      );
+      evidence.push('syllabus-link');
     }
 
-    if (
-      specificSubject
-    ) {
+    if (specificSubject) {
       score += 3;
       evidence.push(
         'syllabus-specific-exam-or-post'
@@ -1425,19 +1096,14 @@ function categoryEvidence(
     return {
       ok:
         score >= 8 &&
-        (strongTitle ||
-          strongLink) &&
+        (strongTitle || strongLink) &&
         specificSubject,
-
       score,
-
       evidence
     };
   }
 
-  if (
-    type === 'admission'
-  ) {
+  if (type === 'admission') {
     const strongTitle =
       /\badmission\b|\bentrance\s*(?:exam|test|examination)\b|\bcounselling\b|\bcounseling\b|\bseat\s*allotment\b/i.test(
         titleText
@@ -1453,25 +1119,15 @@ function categoryEvidence(
         `${titleText} ${bodyText}`
       );
 
-    if (
-      strongTitle
-    ) {
+    if (strongTitle) {
       score += 7;
-      evidence.push(
-        'admission-title'
-      );
-    } else if (
-      strongLink
-    ) {
+      evidence.push('admission-title');
+    } else if (strongLink) {
       score += 6;
-      evidence.push(
-        'admission-link'
-      );
+      evidence.push('admission-link');
     }
 
-    if (
-      operational
-    ) {
+    if (operational) {
       score += 3;
       evidence.push(
         'admission-operational-context'
@@ -1481,19 +1137,14 @@ function categoryEvidence(
     return {
       ok:
         score >= 8 &&
-        (strongTitle ||
-          strongLink) &&
+        (strongTitle || strongLink) &&
         operational,
-
       score,
-
       evidence
     };
   }
 
-  if (
-    type === 'scholarship'
-  ) {
+  if (type === 'scholarship') {
     const strongTitle =
       /\bscholarship\b/i.test(
         titleText
@@ -1509,25 +1160,19 @@ function categoryEvidence(
         `${titleText} ${bodyText}`
       );
 
-    if (
-      strongTitle
-    ) {
+    if (strongTitle) {
       score += 7;
       evidence.push(
         'scholarship-title'
       );
-    } else if (
-      strongLink
-    ) {
+    } else if (strongLink) {
       score += 6;
       evidence.push(
         'scholarship-link'
       );
     }
 
-    if (
-      operational
-    ) {
+    if (operational) {
       score += 3;
       evidence.push(
         'scholarship-operational-context'
@@ -1537,12 +1182,9 @@ function categoryEvidence(
     return {
       ok:
         score >= 8 &&
-        (strongTitle ||
-          strongLink) &&
+        (strongTitle || strongLink) &&
         operational,
-
       score,
-
       evidence
     };
   }
@@ -1562,12 +1204,8 @@ function findNotificationLink(
   links,
   source
 ) {
-  for (
-    const link of links
-  ) {
-    if (
-      !isHttp(link.url)
-    ) {
+  for (const link of links) {
+    if (!isHttp(link.url)) {
       continue;
     }
 
@@ -1581,15 +1219,11 @@ function findNotificationLink(
       continue;
     }
 
-    if (
-      !isPdfUrl(link.url)
-    ) {
+    if (!isPdfUrl(link.url)) {
       continue;
     }
 
-    if (
-      urlHasOldYear(link.url)
-    ) {
+    if (urlHasOldYear(link.url)) {
       continue;
     }
 
@@ -1625,27 +1259,16 @@ function findApplyLink(
   sourceUrl,
   notificationUrl
 ) {
-  for (
-    const link of links
-  ) {
-    if (
-      !isHttp(link.url)
-    ) {
+  for (const link of links) {
+    if (!isHttp(link.url)) {
       continue;
     }
 
-    if (
-      isPdfUrl(link.url)
-    ) {
+    if (isPdfUrl(link.url)) {
       continue;
     }
 
-    if (
-      sameUrl(
-        link.url,
-        sourceUrl
-      )
-    ) {
+    if (sameUrl(link.url, sourceUrl)) {
       continue;
     }
 
@@ -1659,18 +1282,14 @@ function findApplyLink(
       continue;
     }
 
-    if (
-      urlHasOldYear(link.url)
-    ) {
+    if (urlHasOldYear(link.url)) {
       continue;
     }
 
     const label =
       `${link.text} ${link.url}`;
 
-    if (
-      !APPLY.test(label)
-    ) {
+    if (!APPLY.test(label)) {
       continue;
     }
 
@@ -1707,6 +1326,73 @@ function findApplyLink(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Title extraction                                                           */
+/* -------------------------------------------------------------------------- */
+
+function extractBestTitle(
+  html,
+  fallback = ''
+) {
+  const titleMatch =
+    html.match(
+      /<title[^>]*>([\s\S]*?)<\/title>/i
+    );
+
+  const headingMatches = [
+    ...html.matchAll(
+      /<h([12])[^>]*>([\s\S]*?)<\/h\1>/gi
+    )
+  ];
+
+  const headings =
+    headingMatches
+      .map(
+        match =>
+          cleanTitle(match[2])
+      )
+      .filter(Boolean)
+      .filter(
+        value =>
+          value.length >= 8
+      );
+
+  /*
+    Prefer a specific H1/H2 over generic website title.
+  */
+  const specificHeading =
+    headings.find(
+      value =>
+        !GENERIC_TITLE.test(value) &&
+        hasSpecificTitle(
+          value,
+          ''
+        )
+    );
+
+  if (specificHeading) {
+    return specificHeading;
+  }
+
+  const pageTitle =
+    cleanTitle(
+      titleMatch?.[1] || ''
+    );
+
+  if (
+    pageTitle &&
+    !GENERIC_TITLE.test(pageTitle)
+  ) {
+    return pageTitle;
+  }
+
+  if (headings[0]) {
+    return headings[0];
+  }
+
+  return cleanTitle(fallback);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Candidate creation                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -1714,37 +1400,14 @@ function makeCandidate(
   page,
   source
 ) {
-  const titleMatch =
-    page.body.match(
-      /<title[^>]*>([\s\S]*?)<\/title>/i
-    );
-
-  /*
-    Prefer an H1/H2 heading when available.
-    Many government sites have generic <title>
-    values but specific H1/H2 notice headings.
-  */
-  const headingMatch =
-    page.body.match(
-      /<h[12][^>]*>([\s\S]*?)<\/h[12]>/i
-    );
-
   const title =
-    cleanTitle(
-      headingMatch?.[1] ||
-      titleMatch?.[1] ||
-      textOf(
-        page.body
-      ).slice(
-        0,
-        240
-      )
+    extractBestTitle(
+      page.body,
+      page.linkText
     );
 
   const body =
-    textOf(
-      page.body
-    ).slice(
+    textOf(page.body).slice(
       0,
       20000
     );
@@ -1755,13 +1418,13 @@ function makeCandidate(
       page.url
     );
 
-  if (
-    !sourceUrl ||
-    !title
-  ) {
+  if (!sourceUrl || !title) {
     return null;
   }
 
+  /*
+    Generic section pages must never become public records.
+  */
   if (
     isGenericPage(
       sourceUrl,
@@ -1780,11 +1443,7 @@ function makeCandidate(
     return null;
   }
 
-  if (
-    urlHasOldYear(
-      sourceUrl
-    )
-  ) {
+  if (urlHasOldYear(sourceUrl)) {
     return null;
   }
 
@@ -1792,7 +1451,7 @@ function makeCandidate(
     linksOf(
       page.body,
       page.finalUrl ||
-      page.url
+        page.url
     ).slice(
       0,
       MAX_LINKS_PER_PAGE
@@ -1828,8 +1487,7 @@ function makeCandidate(
     findApplyLink(
       links,
       sourceUrl,
-      notification?.url ||
-        null
+      notification?.url || null
     );
 
   const recruitment =
@@ -1848,30 +1506,20 @@ function makeCandidate(
       sourceUrl
     );
 
-  /*
-    ------------------------------------------------------------------------
-    RECRUITMENT GATE
-    ------------------------------------------------------------------------
-  */
+  /* ---------------------------------------------------------------------- */
+  /* Recruitment gate                                                       */
+  /* ---------------------------------------------------------------------- */
 
-  if (
-    type === 'job'
-  ) {
-    if (
-      recruitment.score < 8
-    ) {
+  if (type === 'job') {
+    if (recruitment.score < 8) {
       return null;
     }
 
-    if (
-      !notification?.url
-    ) {
+    if (!notification?.url) {
       return null;
     }
 
-    if (
-      !apply?.url
-    ) {
+    if (!apply?.url) {
       return null;
     }
 
@@ -1923,11 +1571,9 @@ function makeCandidate(
     }
   }
 
-  /*
-    ------------------------------------------------------------------------
-    NON-JOB CATEGORY GATE
-    ------------------------------------------------------------------------
-  */
+  /* ---------------------------------------------------------------------- */
+  /* Non-job category gate                                                  */
+  /* ---------------------------------------------------------------------- */
 
   if (
     type !== 'job' &&
@@ -1941,25 +1587,18 @@ function makeCandidate(
       ? sourceUrl
       : null;
 
-  let categoryDocument =
-    null;
+  let categoryDocument = null;
 
-  if (
-    type === 'admit_card'
-  ) {
+  if (type === 'admit_card') {
     categoryDocument =
       links.find(
         link =>
-          !urlHasOldYear(
-            link.url
-          ) &&
+          !urlHasOldYear(link.url) &&
           /\b(admit|hall[-_\s]?ticket|call[-_\s]?letter|e[-_\s]?admit)\b/i.test(
             `${link.text} ${link.url}`
           ) &&
           (
-            isPdfUrl(
-              link.url
-            ) ||
+            isPdfUrl(link.url) ||
             /\b(download|view|print)\b/i.test(
               link.text
             )
@@ -1967,45 +1606,33 @@ function makeCandidate(
       ) || null;
   }
 
-  if (
-    type === 'result'
-  ) {
+  if (type === 'result') {
     categoryDocument =
       links.find(
         link =>
-          !urlHasOldYear(
-            link.url
-          ) &&
+          !urlHasOldYear(link.url) &&
           /\b(result|merit|selection[-_\s]?list|score[-_\s]?card|marks[-_\s]?list)\b/i.test(
             `${link.text} ${link.url}`
           )
       ) || null;
   }
 
-  if (
-    type === 'answer_key'
-  ) {
+  if (type === 'answer_key') {
     categoryDocument =
       links.find(
         link =>
-          !urlHasOldYear(
-            link.url
-          ) &&
+          !urlHasOldYear(link.url) &&
           /\b(answer[-_\s]?key|response[-_\s]?sheet|answer[-_\s]?sheet|objection)\b/i.test(
             `${link.text} ${link.url}`
           )
       ) || null;
   }
 
-  if (
-    type === 'syllabus'
-  ) {
+  if (type === 'syllabus') {
     categoryDocument =
       links.find(
         link =>
-          !urlHasOldYear(
-            link.url
-          ) &&
+          !urlHasOldYear(link.url) &&
           /\b(syllabus|scheme)\b/i.test(
             `${link.text} ${link.url}`
           ) &&
@@ -2015,12 +1642,9 @@ function makeCandidate(
       ) || null;
   }
 
-  let categoryApply =
-    null;
+  let categoryApply = null;
 
-  if (
-    type === 'admission'
-  ) {
+  if (type === 'admission') {
     categoryApply =
       findApplyLink(
         links,
@@ -2030,8 +1654,7 @@ function makeCandidate(
   }
 
   let notificationUrl =
-    notification?.url ||
-    null;
+    notification?.url || null;
 
   if (
     type !== 'job' &&
@@ -2042,8 +1665,7 @@ function makeCandidate(
   }
 
   let applyUrl =
-    apply?.url ||
-    null;
+    apply?.url || null;
 
   if (
     type === 'admission' &&
@@ -2065,7 +1687,6 @@ function makeCandidate(
     ...(type === 'job'
       ? recruitment.evidence
       : []),
-
     ...(category.evidence || [])
   ];
 
@@ -2081,34 +1702,16 @@ function makeCandidate(
       type,
 
     description:
-      body.slice(
-        0,
-        6000
-      ),
+      body.slice(0, 6000),
 
-    eligibility:
-      null,
-
-    qualification:
-      null,
-
-    vacancies:
-      null,
-
-    age_limit:
-      null,
-
-    age_relaxation:
-      null,
-
-    fee:
-      null,
-
-    selection_process:
-      null,
-
-    salary:
-      null,
+    eligibility: null,
+    qualification: null,
+    vacancies: null,
+    age_limit: null,
+    age_relaxation: null,
+    fee: null,
+    selection_process: null,
+    salary: null,
 
     application_start:
       extractDate(
@@ -2128,11 +1731,8 @@ function makeCandidate(
         '(?:exam date|examination date|written exam|test date)'
       ),
 
-    how_to_apply:
-      null,
-
-    important_dates:
-      null,
+    how_to_apply: null,
+    important_dates: null,
 
     official_url:
       officialUrl,
@@ -2158,6 +1758,13 @@ function makeCandidate(
     notification_key:
       `${source.id}|${sourceUrl}`,
 
+    /*
+      Keep both fields because the verification layer
+      accepts either source_role or _official.
+    */
+    source_role:
+      source.role,
+
     _source_role:
       source.role,
 
@@ -2167,38 +1774,25 @@ function makeCandidate(
     _evidence_score:
       finalEvidenceScore,
 
-    _evidence:
-      [
-        ...new Set(
-          finalEvidence
-        )
-      ],
+    _evidence: [
+      ...new Set(finalEvidence)
+    ],
 
     _links:
-      links.slice(
-        0,
-        30
-      )
+      links.slice(0, 30)
   };
 }
 
 /* -------------------------------------------------------------------------- */
-/* Crawl seed scoring                                                        */
+/* Crawl scoring                                                              */
 /* -------------------------------------------------------------------------- */
 
-function scoreCrawlLink(
-  link
-) {
+function scoreCrawlLink(link) {
   const value =
     `${link.text} ${link.url}`;
 
   let score =
     linkPriority(link);
-
-  /*
-    Listing/notice pages are important even when
-    they do not themselves look like a final job.
-  */
 
   if (
     /\b(notice|notices|notification|notifications|advertisement|recruitment|results?|answer|admit|syllabus|career|vacancy|vacancies|current|latest|what'?s\s+new)\b/i.test(
@@ -2206,6 +1800,18 @@ function scoreCrawlLink(
     )
   ) {
     score += 20;
+  }
+
+  /*
+    Links with actual PDFs are useful, but detail pages are
+    preferred because they can contain both notification and
+    application information.
+  */
+
+  if (
+    isPdfUrl(link.url)
+  ) {
+    score += 5;
   }
 
   return score;
@@ -2218,9 +1824,7 @@ function scoreCrawlLink(
 export async function discoverFromSource(
   source
 ) {
-  if (
-    !source?.base_url
-  ) {
+  if (!source?.base_url) {
     throw new Error(
       'Source base URL missing'
     );
@@ -2228,20 +1832,18 @@ export async function discoverFromSource(
 
   const home =
     await fetchWithTimeout(
-      source.base_url
+      normalizeUrl(
+        source.base_url
+      ) || source.base_url
     );
 
-  if (
-    !home.ok
-  ) {
+  if (!home.ok) {
     throw Object.assign(
       new Error(
         `HTTP ${home.status || 'fetch-error'}`
       ),
       {
-        status:
-          home.status,
-
+        status: home.status,
         retryAfter:
           home.retryAfter
       }
@@ -2259,40 +1861,25 @@ export async function discoverFromSource(
       )
     );
 
-  if (
-    !homeIsHtml
-  ) {
+  if (!homeIsHtml) {
     throw Object.assign(
       new Error(
         'Security or unsupported content response'
       ),
       {
-        status:
-          home.status
+        status: home.status
       }
     );
   }
 
-  /*
-    ------------------------------------------------------------------------
-    MULTI-LEVEL CRAWLER
-    ------------------------------------------------------------------------
-
-    Old version:
-      homepage -> relevant links -> final candidate
-
-    New version:
-      homepage
-        -> section/listing pages
-          -> notice/detail pages
-            -> candidate
-
-    This is the important fix for sources such as SSC.
-  */
+  /* ---------------------------------------------------------------------- */
+  /* Multi-level bounded crawler                                             */
+  /* ---------------------------------------------------------------------- */
 
   const queue = [];
   const queued = new Set();
   const fetched = new Set();
+  const pages = [];
 
   const homeUrl =
     normalizeUrl(
@@ -2300,22 +1887,13 @@ export async function discoverFromSource(
       source.base_url
     );
 
-  if (
-    homeUrl
-  ) {
-    queued.add(
-      homeUrl
-    );
+  if (homeUrl) {
+    queued.add(homeUrl);
 
     queue.push({
-      url:
-        homeUrl,
-
+      url: homeUrl,
       depth: 0,
-
-      text:
-        'homepage',
-
+      text: 'homepage',
       score: 0
     });
   }
@@ -2325,9 +1903,7 @@ export async function discoverFromSource(
     baseUrl,
     depth
   ) {
-    if (
-      depth >= MAX_DEPTH
-    ) {
+    if (depth >= MAX_DEPTH) {
       return;
     }
 
@@ -2349,12 +1925,10 @@ export async function discoverFromSource(
         .map(
           link => ({
             ...link,
-
             score:
               scoreCrawlLink(
                 link
               ),
-
             depth:
               depth + 1
           })
@@ -2388,23 +1962,16 @@ export async function discoverFromSource(
       );
 
       queue.push({
-        url:
-          link.url,
-
-        depth:
-          link.depth,
-
-        text:
-          link.text,
-
-        score:
-          link.score
+        url: link.url,
+        depth: link.depth,
+        text: link.text,
+        score: link.score
       });
     }
   }
 
   /*
-    Add homepage links first.
+    Homepage -> section/listing pages.
   */
   addLinks(
     home.body,
@@ -2412,13 +1979,6 @@ export async function discoverFromSource(
       source.base_url,
     0
   );
-
-  const pages = [];
-
-  /*
-    Process queue in priority order.
-    Re-sort after adding second-level links.
-  */
 
   while (
     queue.length &&
@@ -2433,9 +1993,7 @@ export async function discoverFromSource(
     const next =
       queue.shift();
 
-    if (
-      !next?.url
-    ) {
+    if (!next?.url) {
       continue;
     }
 
@@ -2451,9 +2009,6 @@ export async function discoverFromSource(
       next.url
     );
 
-    /*
-      Homepage was already fetched.
-    */
     let response;
 
     if (
@@ -2462,8 +2017,7 @@ export async function discoverFromSource(
         homeUrl
       )
     ) {
-      response =
-        home;
+      response = home;
     } else {
       response =
         await fetchWithTimeout(
@@ -2471,9 +2025,7 @@ export async function discoverFromSource(
         );
     }
 
-    if (
-      !response.ok
-    ) {
+    if (!response.ok) {
       continue;
     }
 
@@ -2503,26 +2055,16 @@ export async function discoverFromSource(
       next.url;
 
     pages.push({
-      url:
-        next.url,
-
+      url: next.url,
       finalUrl,
-
-      body:
-        response.body,
-
-      depth:
-        next.depth,
-
-      linkText:
-        next.text,
-
-      score:
-        next.score
+      body: response.body,
+      depth: next.depth,
+      linkText: next.text,
+      score: next.score
     });
 
     /*
-      Continue crawling listing/section pages.
+      Listing/detail page -> next level.
     */
     if (
       next.depth <
@@ -2546,11 +2088,6 @@ export async function discoverFromSource(
   const candidates =
     [];
 
-  /*
-    Candidate pages are processed before generic
-    listing pages whenever possible.
-  */
-
   pages.sort(
     (a, b) =>
       b.score -
@@ -2566,12 +2103,15 @@ export async function discoverFromSource(
         source
       );
 
-    if (
-      !candidate
-    ) {
+    if (!candidate) {
       continue;
     }
 
+    /*
+      Use the detail page URL as the discovery key.
+      This prevents the same notice from being returned
+      multiple times through different navigation paths.
+    */
     const pageKey =
       normalizeUrl(
         candidate.canonical_url ||
@@ -2585,9 +2125,7 @@ export async function discoverFromSource(
       continue;
     }
 
-    seen.add(
-      pageKey
-    );
+    seen.add(pageKey);
 
     candidates.push(
       candidate
@@ -2607,4 +2145,4 @@ export async function discoverPortal(
   return discoverFromSource(
     source
   );
-  }
+}
