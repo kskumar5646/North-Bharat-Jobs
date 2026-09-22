@@ -13,6 +13,21 @@
   - Portal data is secondary only.
   - Existing published data is never destroyed by
     temporary/incomplete source scans.
+
+  SSC SPECIAL ADAPTER
+  -------------------
+  SSC's current website exposes recruitment notices
+  through official PDF attachment URLs and may not
+  expose all useful notice links in normal homepage
+  HTML.
+
+  Therefore:
+  - SSC gets a dedicated discovery path.
+  - Only real SSC URLs are accepted.
+  - PDF URLs are never invented from guessed
+    recruitment names.
+  - SSC PDFs are discovered from official HTML
+    pages and known official attachment references.
 */
 
 import {
@@ -30,6 +45,9 @@ const MAX_LINKS = 300;
 const MAX_PAGES = 30;
 const MAX_DEPTH = 2;
 const MAX_LINKS_PER_PAGE = 180;
+
+const SSC_MAX_PAGES = 45;
+const SSC_MAX_LINKS_PER_PAGE = 250;
 
 const FETCH_TIMEOUT_MS = 12000;
 
@@ -136,7 +154,75 @@ const NOTIFICATION_SIGNAL =
     engagement\s*notice|
     detailed\s*advertisement|
     detailed\s*notification|
-    notice\s*of\s*recruitment
+    notice\s*of\s*recruitment|
+    examination\s*notice|
+    exam\s*notice
+  )\b/i;
+
+
+/* -------------------------------------------------------------------------- */
+/* SSC-specific signals                                                       */
+/* -------------------------------------------------------------------------- */
+
+const SSC_NOTICE_PATH =
+  /\/api\/attachment\/uploads\/masterData\/NoticeBoards\//i;
+
+const SSC_NOTICE_FILE =
+  /\.(?:pdf)(?:[?#].*)?$/i;
+
+const SSC_RECRUITMENT_PATTERN =
+  /\b(
+    recruitment|
+    examination|
+    exam|
+    selection\s+post|
+    combined|
+    constable|
+    sub[-\s]?inspector|
+    junior\s+engineer|
+    stenographer|
+    multi[-\s]?tasking|
+    mts|
+    combined\s+graduate|
+    cgl|
+    combined\s+higher\s+secondary|
+    chsl|
+    hindi\s+translator|
+    translator|
+    scientific\s+assistant|
+    junior\s+hindi\s+translator|
+    data\s+entry|
+    ldc|
+    jsa|
+    gd|
+    capf|
+    phase[-\s]?\w+
+  )\b/i;
+
+
+const SSC_NON_RECRUITMENT_PATTERN =
+  /\b(
+    rti|
+    right\s+to\s+information|
+    policy|
+    annual\s+report|
+    tender|
+    procurement|
+    vendor|
+    press\s+release|
+    budget|
+    finance|
+    audit|
+    result|
+    admit\s+card|
+    answer\s+key|
+    syllabus|
+    corrigendum|
+    correction|
+    notice\s+for\s+option|
+    calendar|
+    schedule|
+    vacancy\s+status
   )\b/i;
 
 
@@ -352,16 +438,6 @@ function isGenericPage(url, title = '') {
   const value =
     String(url || '');
 
-  const lower =
-    value.toLowerCase();
-
-  if (
-    lower ===
-    lower.replace(/\/+$/, '')
-  ) {
-    // handled below by title/path checks
-  }
-
   if (
     GENERIC_TITLE_PATTERN.test(
       cleanTitle(title)
@@ -514,7 +590,14 @@ function hasSpecificTitle(
       notice|
       corrigendum|
       extension|
-      application
+      application|
+      combined|
+      selection\s+post|
+      cgl|
+      chsl|
+      mts|
+      capf|
+      gd
     )\b/i;
 
   if (
@@ -523,12 +606,6 @@ function hasSpecificTitle(
     return true;
   }
 
-  /*
-    Some official pages use a meaningful title
-    without an obvious keyword. Permit them only
-    when the source name appears in the title and
-    the title is reasonably specific.
-  */
   if (
     sourceName &&
     value.toLowerCase()
@@ -747,28 +824,12 @@ function isUsefulCrawlLink(
     }
   }
 
-  /*
-    PDFs are useful even though they are not
-    recursively crawled.
-  */
-  if (
-    isPdfUrl(link.url)
-  ) {
-    return true;
-  }
-
-  /*
-    Do NOT reject links merely because their
-    title is generic. A listing page may have
-    "Click Here" / "Download" links pointing
-    to the actual recruitment page.
-  */
   return true;
 }
 
 
 /* -------------------------------------------------------------------------- */
-/* Fetch                                                                       */
+/* Fetch                                                                      */
 /* -------------------------------------------------------------------------- */
 
 async function fetchWithTimeout(
@@ -821,14 +882,6 @@ async function fetchWithTimeout(
 
     let body = '';
 
-    /*
-      We intentionally do not parse the entire
-      PDF body here. Large PDF buffering inside
-      Workers is unnecessary and can consume memory.
-      The direct PDF URL plus recruitment-page
-      context is sufficient for notification
-      identification.
-    */
     if (
       !isPdf &&
       (
@@ -1274,10 +1327,6 @@ function findNotificationLink(
     return null;
   }
 
-  /*
-    First preference:
-    explicit notification/recruitment wording.
-  */
   const explicit =
     officialLinks
       .filter(link =>
@@ -1297,14 +1346,6 @@ function findNotificationLink(
     return explicit[0].url;
   }
 
-  /*
-    Second preference:
-    generic PDF link on a page that has strong
-    recruitment evidence.
-
-    This fixes pages where the PDF anchor says
-    only "Download PDF" or "Click Here".
-  */
   if (
     /\brecruitment\b|\bvacanc(?:y|ies)\b|\badvertisement\b|\bnotification\b|\bemployment\s+notice\b|\bappointment\b/i
       .test(pageContext)
@@ -1332,11 +1373,6 @@ function findNotificationLink(
     }
   }
 
-  /*
-    Third preference:
-    PDF URL itself often contains notification
-    identifiers even when anchor text is generic.
-  */
   const urlSignal =
     officialLinks
       .find(link =>
@@ -1428,9 +1464,6 @@ function findApplyLink(
         }
       });
 
-  /*
-    Explicit apply/registration link.
-  */
   const explicit =
     candidates
       .filter(link =>
@@ -1450,12 +1483,6 @@ function findApplyLink(
     return explicit[0].url;
   }
 
-  /*
-    Common application endpoint patterns.
-    We still require a recruitment/application
-    context on the page to prevent generic
-    careers links becoming apply links.
-  */
   const endpoint =
     candidates
       .filter(link =>
@@ -1710,10 +1737,6 @@ function extractCandidateFields(
       ? 'Apply through the official application link.'
       : null;
 
-  const organization =
-    source?.name ||
-    null;
-
   return {
     application_start:
       applicationStart,
@@ -1745,7 +1768,8 @@ function extractCandidateFields(
     how_to_apply:
       howToApply,
 
-    organization
+    organization:
+      source?.name || null
   };
 }
 
@@ -1874,9 +1898,6 @@ function makeCandidate(
       source
     );
 
-  /*
-    Recruitment is deliberately strict.
-  */
   if (
     category === 'job' &&
     !recruitment.strongRecruitment
@@ -1884,13 +1905,6 @@ function makeCandidate(
     return null;
   }
 
-  /*
-    A job must have both direct PDF and real
-    application URL before being considered
-    a complete official recruitment candidate.
-    monitor.js handles portal fallback if either
-    is missing.
-  */
   if (
     category === 'job' &&
     (
@@ -1898,11 +1912,6 @@ function makeCandidate(
       !applyUrl
     )
   ) {
-    /*
-      Keep candidate only when recruitment
-      evidence is strong. This allows monitor.js
-      to invoke Portal 1/2 fallback.
-    */
     if (
       recruitment.score < 10
     ) {
@@ -1910,9 +1919,6 @@ function makeCandidate(
     }
   }
 
-  /*
-    Non-job records use category evidence.
-  */
   if (
     category !== 'job'
   ) {
@@ -1936,11 +1942,6 @@ function makeCandidate(
       pageUrl
     );
 
-  /*
-    Strong notification identity:
-    use notification URL where available,
-    otherwise the official detail page.
-  */
   const notificationKeyBase =
     notificationUrl ||
     canonicalUrl ||
@@ -1950,15 +1951,6 @@ function makeCandidate(
     `${source.id}|${normalizeUrl(
       notificationKeyBase
     )}`;
-
-  const officialUrl =
-    pageUrl;
-
-  const description =
-    body
-      .slice(0, 3000)
-      .trim() ||
-      null;
 
   return {
     type:
@@ -1976,7 +1968,9 @@ function makeCandidate(
     location:
       null,
 
-    description,
+    description:
+      body.slice(0, 3000).trim() ||
+      null,
 
     eligibility:
       fields.qualification ||
@@ -2028,23 +2022,12 @@ function makeCandidate(
     important_dates:
       null,
 
-    /*
-      IMPORTANT:
-      official_url is the actual official
-      detail/recruitment page, not homepage.
-    */
     official_url:
-      officialUrl,
+      pageUrl,
 
-    /*
-      Direct notification PDF.
-    */
     notification_url:
       notificationUrl,
 
-    /*
-      Actual application/registration URL.
-    */
     apply_url:
       applyUrl,
 
@@ -2090,7 +2073,1006 @@ function makeCandidate(
 
 
 /* -------------------------------------------------------------------------- */
-/* Page ranking                                                               */
+/* SSC PDF candidate helpers                                                  */
+/* -------------------------------------------------------------------------- */
+
+function sscPdfIsUsable(url) {
+  if (
+    !isHttp(url)
+  ) {
+    return false;
+  }
+
+  if (
+    !SSC_NOTICE_PATH.test(url)
+  ) {
+    return false;
+  }
+
+  if (
+    !SSC_NOTICE_FILE.test(url)
+  ) {
+    return false;
+  }
+
+  if (
+    urlHasOldYear(url)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+
+function sscPdfTitle(url) {
+  try {
+    const pathname =
+      new URL(url).pathname;
+
+    const filename =
+      pathname
+        .split('/')
+        .pop() || '';
+
+    return cleanTitle(
+      filename
+        .replace(/\.pdf$/i, '')
+        .replace(/[_-]+/g, ' ')
+    );
+  } catch {
+    return null;
+  }
+}
+
+
+function sscPdfCategory(
+  title,
+  url
+) {
+  const combined =
+    `${title} ${url}`;
+
+  if (
+    /\badmit\b|\badmission\s+certificate\b/i
+      .test(combined)
+  ) {
+    return 'admit';
+  }
+
+  if (
+    /\banswer\s+key\b/i
+      .test(combined)
+  ) {
+    return 'answer';
+  }
+
+  if (
+    /\bresult\b|\bmerit\s+list\b|\bselection\s+list\b/i
+      .test(combined)
+  ) {
+    return 'result';
+  }
+
+  if (
+    /\bsyllabus\b/i
+      .test(combined)
+  ) {
+    return 'syllabus';
+  }
+
+  if (
+    SSC_RECRUITMENT_PATTERN.test(combined)
+  ) {
+    return 'job';
+  }
+
+  return null;
+}
+
+
+function sscPdfLooksRecruitment(
+  title,
+  url
+) {
+  const combined =
+    `${title} ${url}`;
+
+  if (
+    SSC_NON_RECRUITMENT_PATTERN.test(
+      combined
+    ) &&
+    !SSC_RECRUITMENT_PATTERN.test(
+      combined
+    )
+  ) {
+    return false;
+  }
+
+  return SSC_RECRUITMENT_PATTERN.test(
+    combined
+  );
+}
+
+
+function makeSscPdfCandidate(
+  pdfUrl,
+  source
+) {
+  if (
+    !sscPdfIsUsable(pdfUrl)
+  ) {
+    return null;
+  }
+
+  const title =
+    sscPdfTitle(pdfUrl);
+
+  if (
+    !title ||
+    !hasSpecificTitle(
+      title,
+      'SSC'
+    )
+  ) {
+    return null;
+  }
+
+  const category =
+    sscPdfCategory(
+      title,
+      pdfUrl
+    );
+
+  if (
+    !category
+  ) {
+    return null;
+  }
+
+  /*
+    Only recruitment PDFs are allowed to become
+    automatic SSC job records here.
+
+    We deliberately do not turn result/admit/
+    answer-key PDFs into jobs.
+  */
+  if (
+    category !== 'job'
+  ) {
+    return null;
+  }
+
+  if (
+    !sscPdfLooksRecruitment(
+      title,
+      pdfUrl
+    )
+  ) {
+    return null;
+  }
+
+  /*
+    The PDF itself is the authoritative notification.
+    We do NOT pretend that the PDF is an apply URL.
+    We also do not invent an application endpoint.
+  */
+  return {
+    type: 'job',
+
+    title,
+
+    organization:
+      'Staff Selection Commission',
+
+    category: 'job',
+
+    location:
+      null,
+
+    description:
+      `Official SSC recruitment notification: ${title}`,
+
+    eligibility:
+      null,
+
+    qualification:
+      null,
+
+    vacancies:
+      null,
+
+    age_limit:
+      null,
+
+    age_relaxation:
+      null,
+
+    fee:
+      null,
+
+    selection_process:
+      null,
+
+    salary:
+      null,
+
+    application_start:
+      null,
+
+    last_date:
+      null,
+
+    exam_date:
+      null,
+
+    how_to_apply:
+      null,
+
+    important_dates:
+      null,
+
+    /*
+      The PDF is an official notification.
+      The detail page will be filled when discovered.
+    */
+    official_url:
+      'https://ssc.gov.in/',
+
+    notification_url:
+      pdfUrl,
+
+    /*
+      Never invent an apply URL.
+    */
+    apply_url:
+      null,
+
+    source_url:
+      pdfUrl,
+
+    source_name:
+      source.name,
+
+    source_id:
+      source.id,
+
+    source_hash:
+      null,
+
+    canonical_url:
+      normalizeUrl(pdfUrl),
+
+    notification_key:
+      `${source.id}|${normalizeUrl(pdfUrl)}`,
+
+    _official:
+      source.role === 'official',
+
+    authority:
+      source.role === 'official'
+        ? 'official'
+        : 'secondary',
+
+    source_role:
+      source.role,
+
+    _evidence: [
+      'ssc-official-notice-pdf',
+      'ssc-api-attachment',
+      'recruitment-title'
+    ],
+
+    _evidence_score:
+      10,
+
+    _recruitment_score:
+      10,
+
+    /*
+      Monitor can identify that this candidate
+      still needs the real application URL.
+    */
+    _ssc_pdf_only:
+      true
+  };
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* SSC HTML embedded PDF extraction                                           */
+/* -------------------------------------------------------------------------- */
+
+function extractSscPdfUrls(
+  html,
+  baseUrl,
+  source
+) {
+  const found =
+    new Set();
+
+  const candidates =
+    [];
+
+  /*
+    Normal href/src references.
+  */
+  const directRegex =
+    /(?:href|src)\s*=\s*["']([^"']+\.pdf(?:[^"']*)?)["']/gi;
+
+  let match;
+
+  while (
+    (match =
+      directRegex.exec(html))
+  ) {
+    const url =
+      safeUrl(
+        match[1],
+        baseUrl
+      );
+
+    if (
+      url &&
+      sscPdfIsUsable(url)
+    ) {
+      found.add(
+        normalizeUrl(url)
+      );
+      candidates.push(url);
+    }
+  }
+
+  /*
+    Raw HTML may contain escaped or JSON-style
+    URL strings.
+  */
+  const rawRegex =
+    /https?:\/\/ssc\.gov\.in\/api\/attachment\/uploads\/masterData\/NoticeBoards\/[^"'\\\s<>]+\.pdf/gi;
+
+  while (
+    (match =
+      rawRegex.exec(html))
+  ) {
+    const url =
+      match[0]
+        .replace(/\\u002F/g, '/')
+        .replace(/\\\//g, '/');
+
+    if (
+      sscPdfIsUsable(url)
+    ) {
+      const normalized =
+        normalizeUrl(url);
+
+      if (
+        !found.has(normalized)
+      ) {
+        found.add(normalized);
+        candidates.push(url);
+      }
+    }
+  }
+
+  /*
+    Relative / escaped attachment references.
+  */
+  const attachmentRegex =
+    /(?:\/|\\\/)api(?:\/|\\\/)attachment(?:\/|\\\/)uploads(?:\/|\\\/)masterData(?:\/|\\\/)NoticeBoards(?:\/|\\\/)[^"'\\\s<>]+\.pdf/gi;
+
+  while (
+    (match =
+      attachmentRegex.exec(html))
+  ) {
+    const cleaned =
+      match[0]
+        .replace(/\\/g, '');
+
+    const url =
+      safeUrl(
+        cleaned,
+        baseUrl
+      );
+
+    if (
+      url &&
+      sscPdfIsUsable(url)
+    ) {
+      const normalized =
+        normalizeUrl(url);
+
+      if (
+        !found.has(normalized)
+      ) {
+        found.add(normalized);
+        candidates.push(url);
+      }
+    }
+  }
+
+  return candidates;
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* SSC application-link extraction                                            */
+/* -------------------------------------------------------------------------- */
+
+function findSscApplyLink(
+  links,
+  pageUrl
+) {
+  const candidates =
+    (links || [])
+      .filter(link => {
+        if (
+          !isHttp(link.url)
+        ) {
+          return false;
+        }
+
+        if (
+          isPdfUrl(link.url)
+        ) {
+          return false;
+        }
+
+        if (
+          sameUrl(
+            link.url,
+            pageUrl
+          )
+        ) {
+          return false;
+        }
+
+        if (
+          urlHasOldYear(link.url)
+        ) {
+          return false;
+        }
+
+        return true;
+      });
+
+  /*
+    SSC application links may point to the
+    mySSC/application module rather than a URL
+    containing "apply".
+  */
+  const explicit =
+    candidates
+      .filter(link =>
+        APPLY_PATTERN.test(
+          `${link.text} ${link.url}`
+        ) ||
+        /myssc|applicationform|application-form|apply/i
+          .test(link.url)
+      )
+      .sort(
+        (a, b) =>
+          linkPriority(b) -
+          linkPriority(a)
+      );
+
+  return (
+    explicit[0]?.url ||
+    null
+  );
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* SSC dedicated discovery                                                   */
+/* -------------------------------------------------------------------------- */
+
+async function discoverSsc(
+  source
+) {
+  const homepage =
+    normalizeUrl(
+      source.base_url
+    );
+
+  if (
+    !homepage
+  ) {
+    throw new Error(
+      `Invalid SSC source URL: ${source.base_url}`
+    );
+  }
+
+  const first =
+    await fetchWithTimeout(
+      homepage
+    );
+
+  if (
+    !first.ok
+  ) {
+    const error =
+      new Error(
+        `SSC: HTTP ${first.status}`
+      );
+
+    error.status =
+      first.status;
+
+    error.retryAfter =
+      first.retryAfter;
+
+    throw error;
+  }
+
+  /*
+    SSC can return HTML normally, but if it
+    directly redirects to a PDF we still handle
+    that safely.
+  */
+  if (
+    first.isPdf
+  ) {
+    const candidate =
+      makeSscPdfCandidate(
+        first.finalUrl ||
+          homepage,
+        source
+      );
+
+    return candidate
+      ? [candidate]
+      : [];
+  }
+
+  const pages = [];
+
+  const queue = [
+    {
+      url:
+        first.finalUrl ||
+        homepage,
+
+      html:
+        first.body || '',
+
+      depth:
+        0,
+
+      fallbackTitle:
+        'SSC'
+    }
+  ];
+
+  const visited =
+    new Set();
+
+  visited.add(
+    normalizeUrl(
+      first.finalUrl ||
+      homepage
+    )
+  );
+
+  const pdfUrls =
+    new Set();
+
+  const candidates =
+    [];
+
+  while (
+    queue.length &&
+    pages.length < SSC_MAX_PAGES
+  ) {
+    const page =
+      queue.shift();
+
+    pages.push(page);
+
+    const links =
+      parseLinks(
+        page.html,
+        page.url
+      );
+
+    page.links =
+      links;
+
+    /*
+      1. Extract direct SSC notification PDFs
+         from raw HTML.
+    */
+    const embeddedPdfs =
+      extractSscPdfUrls(
+        page.html,
+        page.url,
+        source
+      );
+
+    for (
+      const pdfUrl of embeddedPdfs
+    ) {
+      pdfUrls.add(
+        normalizeUrl(pdfUrl)
+      );
+    }
+
+    /*
+      2. Extract ordinary PDF anchors.
+    */
+    for (
+      const link of links
+    ) {
+      if (
+        isPdfUrl(link.url) &&
+        sscPdfIsUsable(link.url)
+      ) {
+        pdfUrls.add(
+          normalizeUrl(link.url)
+        );
+      }
+    }
+
+    /*
+      3. Look for real application links.
+    */
+    const applyUrl =
+      findSscApplyLink(
+        links,
+        page.url
+      );
+
+    if (
+      applyUrl
+    ) {
+      page._sscApplyUrl =
+        applyUrl;
+    }
+
+    if (
+      page.depth >=
+      2
+    ) {
+      continue;
+    }
+
+    const pageText =
+      textOf(page.html)
+        .slice(0, 15000);
+
+    const ranked =
+      links
+        .filter(link =>
+          isUsefulCrawlLink(
+            link,
+            source,
+            page.url
+          )
+        )
+        .map(link => ({
+          link,
+          score:
+            linkPriority(
+              link,
+              pageText
+            ) +
+            (
+              SSC_RECRUITMENT_PATTERN.test(
+                `${link.text} ${link.url}`
+              )
+                ? 10
+                : 0
+            )
+        }))
+        .sort(
+          (a, b) =>
+            b.score -
+            a.score
+        )
+        .slice(
+          0,
+          SSC_MAX_LINKS_PER_PAGE
+        );
+
+    for (
+      const entry of ranked
+    ) {
+      const link =
+        entry.link;
+
+      if (
+        isPdfUrl(link.url)
+      ) {
+        continue;
+      }
+
+      const normalized =
+        normalizeUrl(
+          link.url
+        );
+
+      if (
+        !normalized ||
+        visited.has(normalized)
+      ) {
+        continue;
+      }
+
+      if (
+        pages.length +
+        queue.length >=
+        SSC_MAX_PAGES
+      ) {
+        break;
+      }
+
+      visited.add(
+        normalized
+      );
+
+      try {
+        const response =
+          await fetchWithTimeout(
+            normalized
+          );
+
+        if (
+          !response.ok ||
+          response.isPdf ||
+          !response.body
+        ) {
+          continue;
+        }
+
+        queue.push({
+          url:
+            response.finalUrl ||
+            normalized,
+
+          html:
+            response.body,
+
+          depth:
+            page.depth + 1,
+
+          fallbackTitle:
+            link.text ||
+            'SSC'
+        });
+
+      } catch {
+        /*
+          Continue scanning other SSC pages.
+        */
+      }
+    }
+  }
+
+
+  /*
+    Build candidates from official SSC PDFs.
+  */
+  for (
+    const pdfUrl of pdfUrls
+  ) {
+    const candidate =
+      makeSscPdfCandidate(
+        pdfUrl,
+        source
+      );
+
+    if (
+      candidate
+    ) {
+      candidates.push(
+        candidate
+      );
+    }
+  }
+
+
+  /*
+    Also run normal candidate extraction on
+    discovered HTML pages.
+
+    This can provide:
+    - actual official detail page
+    - real application URL
+    - additional metadata
+  */
+  for (
+    const page of pages
+  ) {
+    const candidate =
+      makeCandidate(
+        page,
+        source
+      );
+
+    if (
+      !candidate
+    ) {
+      continue;
+    }
+
+    /*
+      SSC-specific protection:
+      do not accept a generic SSC page as a
+      recruitment job simply because the body
+      contains the word "application".
+    */
+    if (
+      candidate.type === 'job'
+    ) {
+      const combined =
+        `${candidate.title} ${candidate.source_url}`;
+
+      if (
+        !SSC_RECRUITMENT_PATTERN.test(
+          combined
+        )
+      ) {
+        continue;
+      }
+
+      if (
+        SSC_NON_RECRUITMENT_PATTERN.test(
+          combined
+        ) &&
+        !/\b(recruitment|examination|selection\s+post|cgl|chsl|mts|constable|junior\s+engineer)\b/i
+          .test(combined)
+      ) {
+        continue;
+      }
+    }
+
+    candidates.push(
+      candidate
+    );
+  }
+
+
+  /*
+    Deduplicate by notification URL first.
+  */
+  const unique =
+    new Map();
+
+  for (
+    const candidate of candidates
+  ) {
+    const identity =
+      normalizeUrl(
+        candidate.notification_url ||
+        candidate.canonical_url ||
+        candidate.source_url
+      );
+
+    if (
+      !identity
+    ) {
+      continue;
+    }
+
+    if (
+      !unique.has(identity)
+    ) {
+      unique.set(
+        identity,
+        candidate
+      );
+      continue;
+    }
+
+    /*
+      Prefer the richer candidate.
+    */
+    const existing =
+      unique.get(identity);
+
+    const existingScore =
+      Number(
+        existing._evidence_score || 0
+      );
+
+    const newScore =
+      Number(
+        candidate._evidence_score || 0
+      );
+
+    if (
+      newScore >
+      existingScore
+    ) {
+      unique.set(
+        identity,
+        candidate
+      );
+    }
+  }
+
+
+  /*
+    Important:
+    If we have an HTML recruitment page with a
+    matching SSC notification PDF, connect them.
+  */
+  const result =
+    Array.from(
+      unique.values()
+    );
+
+  for (
+    const candidate of result
+  ) {
+    if (
+      candidate.type !== 'job'
+    ) {
+      continue;
+    }
+
+    /*
+      If candidate already has notification URL,
+      keep it.
+    */
+    if (
+      candidate.notification_url
+    ) {
+      continue;
+    }
+
+    const titleText =
+      compactText(
+        candidate.title
+      );
+
+    const matchingPdf =
+      result.find(other =>
+        other !== candidate &&
+        other.type === 'job' &&
+        other.notification_url &&
+        (
+          compactText(
+            other.title
+          ).includes(titleText) ||
+          titleText.includes(
+            compactText(
+              other.title
+            )
+          )
+        )
+      );
+
+    if (
+      matchingPdf
+    ) {
+      candidate.notification_url =
+        matchingPdf.notification_url;
+    }
+  }
+
+
+  /*
+    Strongest SSC candidates first.
+  */
+  result.sort(
+    (a, b) =>
+      Number(
+        b._evidence_score || 0
+      ) -
+      Number(
+        a._evidence_score || 0
+      )
+  );
+
+  return result.slice(
+    0,
+    MAX_LINKS
+  );
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Generic page ranking                                                       */
 /* -------------------------------------------------------------------------- */
 
 function pageScore(
@@ -2179,21 +3161,12 @@ function pageScore(
 
 
 /* -------------------------------------------------------------------------- */
-/* Source discovery                                                           */
+/* Generic source discovery                                                   */
 /* -------------------------------------------------------------------------- */
 
-export async function discoverFromSource(
+async function discoverGeneric(
   source
 ) {
-  if (
-    !source ||
-    !source.base_url
-  ) {
-    throw new Error(
-      'Official source configuration is missing base_url.'
-    );
-  }
-
   const homepage =
     normalizeUrl(
       source.base_url
@@ -2203,7 +3176,7 @@ export async function discoverFromSource(
     !homepage
   ) {
     throw new Error(
-      `Invalid source URL: ${source.base_url}`
+      'Official source configuration is missing base_url.'
     );
   }
 
@@ -2330,10 +3303,6 @@ export async function discoverFromSource(
       const link =
         entry.link;
 
-      /*
-        PDFs are candidate evidence but are not
-        recursively fetched/parsed.
-      */
       if (
         isPdfUrl(link.url)
       ) {
@@ -2396,16 +3365,13 @@ export async function discoverFromSource(
 
       } catch {
         /*
-          One bad child page must not kill the
-          entire official source scan.
+          One bad child page must not kill
+          the entire source scan.
         */
       }
     }
   }
 
-  /*
-    Highest-value pages first.
-  */
   pages.sort(
     (a, b) =>
       pageScore(b, source) -
@@ -2461,9 +3427,6 @@ export async function discoverFromSource(
     );
   }
 
-  /*
-    Strong candidates first.
-  */
   discoveredCandidates.sort(
     (a, b) =>
       Number(
@@ -2474,11 +3437,45 @@ export async function discoverFromSource(
       )
   );
 
-  return discoveredCandidates
-    .slice(
-      0,
-      MAX_LINKS
+  return discoveredCandidates.slice(
+    0,
+    MAX_LINKS
+  );
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Public source discovery                                                    */
+/* -------------------------------------------------------------------------- */
+
+export async function discoverFromSource(
+  source
+) {
+  if (
+    !source ||
+    !source.base_url
+  ) {
+    throw new Error(
+      'Official source configuration is missing base_url.'
     );
+  }
+
+  /*
+    Dedicated adapter selection.
+  */
+  if (
+    String(
+      source.adapter || ''
+    ).toLowerCase() === 'ssc'
+  ) {
+    return discoverSsc(
+      source
+    );
+  }
+
+  return discoverGeneric(
+    source
+  );
 }
 
 
@@ -2489,11 +3486,7 @@ export async function discoverFromSource(
 export async function discoverPortal(
   source
 ) {
-  /*
-    Same discovery engine, but portal candidates
-    are marked secondary through the source role.
-  */
-  return discoverFromSource(
+  return discoverGeneric(
     source
   );
 }
