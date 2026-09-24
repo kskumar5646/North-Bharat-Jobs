@@ -2553,12 +2553,17 @@ export async function runMonitor(
               next_retry_at IS NULL
               OR next_retry_at<=?
             )
+          /*
+            Fair rotation: oldest checked source first.
+            Priority is only the tie-breaker; otherwise a
+            high-priority source can monopolize every Cron run.
+          */
           ORDER BY
-            priority ASC,
             COALESCE(
               last_checked_at,
               '1970-01-01'
             ) ASC,
+            priority ASC,
             id ASC
           LIMIT ?
         `)
