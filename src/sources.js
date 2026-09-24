@@ -682,8 +682,18 @@ async function discoverSSC(source) {
 /* Linked notification discovery                                              */
 /* -------------------------------------------------------------------------- */
 
-function isLikelyRecruitmentNoticeTitle(title) {
-  const value = cleanTitle(title);
+function isLikelyRecruitmentNoticeTitle(title, url = '') {
+  let value = cleanTitle(title);
+
+  if ((!value || value.length < 12) && url) {
+    try {
+      const pathname = new URL(url).pathname;
+      const filename = decodeURIComponent(pathname.split('/').pop() || '')
+        .replace(/\.[a-z0-9]+$/i, '')
+        .replace(/[_-]+/g, ' ');
+      value = cleanTitle(filename);
+    } catch {}
+  }
 
   if (!value || value.length < 12) {
     return false;
@@ -694,7 +704,7 @@ function isLikelyRecruitmentNoticeTitle(title) {
   }
 
   const yearSignal = new RegExp('\\b(?:' + CURRENT_YEAR + '|' + MIN_ACCEPTABLE_YEAR + ')\\b', 'i').test(value);
-  const recruitmentSignal = /\b(?:recruitment|vacanc(?:y|ies)|advertisement|employment\s+notice|appointment|engagement|application|apply|registration|post|posts|constable|clerk|assistant|engineer|teacher|officer|technician|apprentice|trainee)\b/i.test(value);
+  const recruitmentSignal = /\b(?:recruitment|vacanc(?:y|ies)|advertisement|advt?|employment\s+notice|appointment|engagement|application|apply|registration|post|posts|constable|clerk|assistant|engineer|teacher|officer|technician|apprentice|trainee)\b/i.test(value);
   const examinationNoticeSignal = /\bexamination\b/i.test(value) && /\b(?:notice|notification|advertisement|application|recruitment)\b/i.test(value);
 
   return yearSignal && (recruitmentSignal || examinationNoticeSignal);
@@ -722,8 +732,9 @@ function makeLinkedNotificationCandidates(page, source) {
     }
 
     const title = cleanTitle(link.text);
+    const urlRecruitmentSignal = /(?:notice[_-]?of[_-]?(?:adv|advt|advertisement)|recruitment|vacanc|advertisement|employment|appointment)/i.test(link.url);
 
-    if (!isLikelyRecruitmentNoticeTitle(title)) {
+    if (!isLikelyRecruitmentNoticeTitle(title, link.url) && !urlRecruitmentSignal) {
       continue;
     }
 
