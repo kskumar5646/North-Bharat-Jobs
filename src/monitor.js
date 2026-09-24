@@ -2268,19 +2268,47 @@ async function runOfficial(
       ) {
         stats.verificationRequired++;
 
+        /*
+          IMPORTANT: keep the official discovery as a real
+          verification_required item before fallback. Previously an
+          incomplete official recruitment was only sent to the portal
+          fallback, so with no configured portals it disappeared
+          completely and produced no admin-review record.
+        */
+        const incompleteResult =
+          await upsertOfficial(
+            db,
+            candidate,
+            verification,
+            current,
+            now
+          );
+
+        if (
+          incompleteResult.created ||
+          incompleteResult.changed
+        ) {
+          await notify(
+            db,
+            'verification_required',
+            'Admin verification required',
+            candidate.title + ': official recruitment discovered but one or more required URLs are missing (' +
+              missingRecruitmentUrls(candidate).join(', ') + ').',
+            incompleteResult.id
+          );
+        }
+
         await portalFallbackForCandidate(
           db,
           current,
           candidate,
           verification,
-          existing,
+          existing || await findExistingItem(db, candidate, candidateKey(candidate)),
           now,
           stats
         );
 
-        /*
-          Do not publish incomplete recruitment.
-        */
+        /* Do not publish incomplete recruitment automatically. */
         continue;
       }
 
