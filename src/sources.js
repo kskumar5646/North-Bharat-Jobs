@@ -679,6 +679,103 @@ async function discoverSSC(source) {
 
 
 /* -------------------------------------------------------------------------- */
+/* Linked notification discovery                                              */
+/* -------------------------------------------------------------------------- */
+
+function isLikelyRecruitmentNoticeTitle(title) {
+  const value = cleanTitle(title);
+
+  if (!value || value.length < 12) {
+    return false;
+  }
+
+  if (/\b(?:result|answer\s*key|admit\s*card|hall\s*ticket|final\s+marks|merit\s+list|shortlisted|selected\s+candidates?|cancellation|postponement|tentative\s+allocation)\b/i.test(value)) {
+    return false;
+  }
+
+  const yearSignal = new RegExp('\\b(?:' + CURRENT_YEAR + '|' + MIN_ACCEPTABLE_YEAR + ')\\b', 'i').test(value);
+  const recruitmentSignal = /\b(?:recruitment|vacanc(?:y|ies)|advertisement|employment\s+notice|appointment|engagement|application|apply|registration|post|posts|constable|clerk|assistant|engineer|teacher|officer|technician|apprentice|trainee)\b/i.test(value);
+  const examinationNoticeSignal = /\bexamination\b/i.test(value) && /\b(?:notice|notification|advertisement|application|recruitment)\b/i.test(value);
+
+  return yearSignal && (recruitmentSignal || examinationNoticeSignal);
+}
+
+function makeLinkedNotificationCandidates(page, source) {
+  const links = page.links || [];
+  const output = [];
+
+  for (const link of links) {
+    if (!isPdfUrl(link.url)) {
+      continue;
+    }
+
+    if (urlHasOldYear(link.url) || isBlockedPath(link.url)) {
+      continue;
+    }
+
+    try {
+      if (!sameHostOrAllowed(link.url, source.allowed_domains, source.base_url)) {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+
+    const title = cleanTitle(link.text);
+
+    if (!isLikelyRecruitmentNoticeTitle(title)) {
+      continue;
+    }
+
+    const notificationUrl = normalizeUrl(link.url);
+    const applyUrl = findApplyLink(links, page.url, notificationUrl, source);
+    const body = textOf(page.html || '');
+    const fields = extractCandidateFields(body, source);
+    const canonicalUrl = normalizeUrl(page.url);
+
+    output.push({
+      type: 'job',
+      title,
+      organization: source.name,
+      category: 'job',
+      location: null,
+      description: body.slice(0, 3000).trim() || null,
+      eligibility: fields.qualification || null,
+      qualification: fields.qualification || null,
+      vacancies: fields.vacancies || null,
+      age_limit: fields.age_limit || null,
+      age_relaxation: null,
+      fee: fields.fee || null,
+      selection_process: fields.selection_process || null,
+      salary: fields.salary || null,
+      application_start: fields.application_start || null,
+      last_date: fields.last_date || null,
+      exam_date: fields.exam_date || null,
+      how_to_apply: fields.how_to_apply || null,
+      important_dates: null,
+      official_url: page.url,
+      notification_url: notificationUrl,
+      apply_url: applyUrl,
+      source_url: page.url,
+      source_name: source.name,
+      source_id: source.id,
+      source_hash: null,
+      canonical_url: canonicalUrl,
+      notification_key: String(source.id) + '|' + notificationUrl,
+      _official: source.role === 'official',
+      authority: source.role === 'official' ? 'official' : 'secondary',
+      source_role: source.role,
+      _linked_notification: true,
+      _evidence: ['linked-notification-pdf', 'recruitment-notice-title'],
+      _evidence_score: 12,
+      _recruitment_score: 12
+    });
+  }
+
+  return output;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Generic crawler                                                            */
 /* -------------------------------------------------------------------------- */
 
@@ -712,6 +809,14 @@ async function crawlPagesFromSeed(
     );
 
     page.links = links;
+
+    /* Notification PDFs are not HTML pages, so create candidates from their anchor text. */
+    const linkedCandidates = makeLinkedNotificationCandidates(page, source);
+
+    pages.push(...linkedCandidates.map(candidate => ({
+      ...page,
+      __candidate: candidate
+    })));
 
     if (page.depth >= MAX_DEPTH) {
       continue;
@@ -806,6 +911,11 @@ async function crawlPagesFromSeed(
   const candidates = [];
 
   for (const page of pages) {
+    if (page.__candidate) {
+      candidates.push(page.__candidate);
+      continue;
+    }
+
     const candidate =
       makeCandidate(
         page,
