@@ -43,7 +43,9 @@ const RETRY_MINUTES = 5;
 
 const RETENTION_DAYS = 365;
 
-const SOURCE_BATCH = 4;
+// Free Workers allows only 10 ms CPU per Cron invocation.
+// Process one official source per run instead of four at once.
+const SOURCE_BATCH = 1;
 const CANDIDATE_LIMIT = 8;
 
 const PORTAL_LIMIT = 2;
