@@ -76,7 +76,9 @@ async function hashPassword(password, salt) {
     {
       name: 'PBKDF2',
       salt: enc.encode(salt),
-      iterations: 120000,
+      // Cloudflare Workers rejects PBKDF2 iteration counts above 100000.
+      // Keep this at the runtime-supported ceiling.
+      iterations: 100000,
       hash: 'SHA-256'
     },
     key,
