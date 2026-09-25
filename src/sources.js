@@ -949,41 +949,46 @@ async function crawlPagesFromSeed(
 
 function classify(title, body, links) {
   const titleText = cleanTitle(title);
+  const linkText = (links || []).map(link => link.text).join(' ');
+  const bodyText = String(body || '').slice(0, 16000);
 
-  const linkText =
-    (links || [])
-      .map(link => link.text)
-      .join(' ');
+  // The title is the strongest classification signal. Explicit document
+  // types must win before generic words such as "recruitment" in body text.
+  const titlePriority = [
+    ['answer', CATEGORY_PATTERNS.answer],
+    ['admit', CATEGORY_PATTERNS.admit],
+    ['result', CATEGORY_PATTERNS.result],
+    ['syllabus', CATEGORY_PATTERNS.syllabus],
+    ['scholarship', CATEGORY_PATTERNS.scholarship],
+    ['admission', CATEGORY_PATTERNS.admission],
+    ['job', CATEGORY_PATTERNS.job]
+  ];
 
-  const bodyText =
-    String(body || '').slice(0, 16000);
-
-  for (const [category, patterns] of Object.entries(CATEGORY_PATTERNS)) {
-    if (
-      patterns.some(pattern =>
-        pattern.test(titleText)
-      )
-    ) {
+  for (const [category, patterns] of titlePriority) {
+    if (patterns.some(pattern => pattern.test(titleText))) {
       return category;
     }
   }
 
-  for (const [category, patterns] of Object.entries(CATEGORY_PATTERNS)) {
-    if (
-      patterns.some(pattern =>
-        pattern.test(linkText)
-      )
-    ) {
+  // Links are the next strongest signal, but only explicit document/apply
+  // labels should influence the category.
+  for (const category of ['answer', 'admit', 'result', 'syllabus', 'scholarship', 'admission']) {
+    const patterns = CATEGORY_PATTERNS[category] || [];
+    if (patterns.some(pattern => pattern.test(linkText))) {
       return category;
     }
   }
 
-  for (const [category, patterns] of Object.entries(CATEGORY_PATTERNS)) {
-    if (
-      patterns.some(pattern =>
-        pattern.test(bodyText)
-      )
-    ) {
+  // Generic body text is deliberately weaker: navigation menus and site-wide
+  // text must not turn a recruitment page into an answer key/result/etc.
+  const recruitment = recruitmentEvidence(title, body, links);
+  if (recruitment.strongRecruitment) {
+    return 'job';
+  }
+
+  for (const category of ['answer', 'admit', 'result', 'syllabus', 'scholarship', 'admission']) {
+    const patterns = CATEGORY_PATTERNS[category] || [];
+    if (patterns.some(pattern => pattern.test(bodyText))) {
       return category;
     }
   }
