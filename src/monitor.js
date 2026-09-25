@@ -486,68 +486,22 @@ async function purgeExpiredItems(
   db,
   now
 ) {
-  const cutoff =
-    new Date(
-      now.getTime() -
-      RETENTION_DAYS * 86_400_000
-    ).toISOString();
+  const cutoff = new Date(
+    now.getTime() - RETENTION_DAYS * 86_400_000
+  ).toISOString();
 
-  let deleted = 0;
+  /* Daily bounded cleanup: one batch only, avoiding an unbounded CPU loop. */
+  const result = await db
+    .prepare(\`DELETE FROM items
+      WHERE id IN (
+        SELECT id FROM items
+        WHERE COALESCE(published_at, created_at) < ?
+        LIMIT ?
+      )\`)
+    .bind(cutoff, RETENTION_DELETE_BATCH)
+    .run();
 
-  for (;;) {
-    const rows =
-      await db
-        .prepare(`
-          SELECT id
-          FROM items
-          WHERE
-            COALESCE(
-              published_at,
-              created_at
-            ) < ?
-          LIMIT ?
-        `)
-        .bind(
-          cutoff,
-          RETENTION_DELETE_BATCH
-        )
-        .all();
-
-    const ids =
-      (rows.results || [])
-        .map(row =>
-          Number(row.id)
-        )
-        .filter(
-          Number.isInteger
-        );
-
-    if (!ids.length) {
-      break;
-    }
-
-    await db.batch(
-      ids.map(id =>
-        db
-          .prepare(
-            `DELETE FROM items WHERE id=?`
-          )
-          .bind(id)
-      )
-    );
-
-    deleted +=
-      ids.length;
-
-    if (
-      ids.length <
-      RETENTION_DELETE_BATCH
-    ) {
-      break;
-    }
-  }
-
-  return deleted;
+  return Number(result.meta?.changes || 0);
 }
 
 
@@ -555,7 +509,7 @@ async function purgeExpiredItems(
 /* Existing item lookup                                                       */
 /* -------------------------------------------------------------------------- */
 
-async function findExistingItem(
+(
   db,
   candidate,
   key
@@ -2478,7 +2432,8 @@ async function runOfficial(
 
 export async function runMonitor(
   env,
-  requestedSource = null
+  requestedSource = null,
+  options = {}
 ) {
   const db =
     env.DB;
@@ -2498,14 +2453,14 @@ export async function runMonitor(
     details: []
   };
 
-  /*
-    Retention cleanup.
-  */
-  stats.archived =
-    await purgeExpiredItems(
-      db,
-      started
-    );
+  /* Retention cleanup runs only during the daily maintenance Cron. */
+  if (options?.maintenance === true) {
+    stats.archived =
+      await purgeExpiredItems(
+        db,
+        started
+      );
+  }
 
   let sources;
 
