@@ -76,6 +76,55 @@ const GENERIC_CONTENT_PATTERNS = [
   /\bannual report\b/i,
 ];
 
+const ADMINISTRATIVE_PATTERNS = [
+  /\badministrative\b/i,
+  /\badministration\b/i,
+  /\boffice\s+order\b/i,
+  /\boffice\s+memorandum\b/i,
+  /\bmemorandum\b/i,
+  /\brti\b/i,
+  /\bpolicy\b/i,
+  /\bpolicies\b/i,
+  /\bprocedure\b/i,
+  /\bguidelines?\b/i,
+  /\bminutes\b/i,
+  /\bannual\s+report\b/i,
+  /\bfinancial\s+statement\b/i,
+  /\bpress\s+release\b/i,
+  /\btender\b/i,
+  /\bprocurement\b/i,
+  /\bvendor\b/i,
+  /\bcustomer\s+care\b/i,
+  /\bcitizen\s+charter\b/i
+];
+
+const STRONG_TYPE_PATTERNS = {
+  job: [
+    /\brecruitment\b/i, /\brecruitment\s+(?:notice|notification)\b/i,
+    /\bvacanc(?:y|ies)\b/i, /\bemployment\s+notice\b/i,
+    /\bdirect\s+recruitment\b/i, /\bselection\s+post\b/i,
+    /\badvertisement\s+(?:for\s+)?recruitment\b/i,
+    /\bengagement\s+of\b/i
+  ],
+  answer_key: [
+    /\banswer\s*key\b/i, /\bprovisional\s+answer\s*key\b/i,
+    /\bfinal\s+answer\s*key\b/i
+  ],
+  result: [
+    /\bfinal\s+result\b/i, /\bexam\s+result\b/i,
+    /\bresult\s+(?:of|for)\b/i, /\bmerit\s+list\b/i,
+    /\bselection\s+list\b/i, /\bscore\s*card\b/i
+  ],
+  admit_card: [
+    /\badmit\s*card\b/i, /\bhall\s*ticket\b/i,
+    /\bcall\s+letter\b/i
+  ],
+  syllabus: [
+    /\bsyllabus\b/i, /\bexam\s+pattern\b/i,
+    /\bscheme\s+of\s+examination\b/i
+  ]
+};
+
 const RECRUITMENT_TITLE_PATTERNS = [
   /\brecruitment\b/i,
   /\bvacanc(?:y|ies)\b/i,
@@ -314,6 +363,20 @@ function hasSpecificTitle(title) {
   return true;
 }
 
+function hasAdministrativeContent(candidate) {
+  const combined = [
+    candidate?.title,
+    candidate?.description,
+    candidate?.category,
+    candidate?.source_url,
+    candidate?.official_url
+  ].map(text).filter(Boolean).join(" ");
+
+  return ADMINISTRATIVE_PATTERNS.some(
+    pattern => pattern.test(combined)
+  );
+}
+
 function hasGenericContent(candidate) {
   const combined = [
     candidate?.title,
@@ -327,9 +390,35 @@ function hasGenericContent(candidate) {
     .join(" ");
 
   return GENERIC_CONTENT_PATTERNS.some(
-    (pattern) =>
-      pattern.test(combined)
+    (pattern) => pattern.test(combined)
   );
+}
+
+function hasStrongTypeSignal(candidate) {
+  const type = lower(candidate?.type);
+  const title = text(candidate?.title);
+  const patterns = STRONG_TYPE_PATTERNS[type] || [];
+  return patterns.some(pattern => pattern.test(title));
+}
+
+function hasConsistentDates(candidate) {
+  const parse = value => {
+    const raw = text(value);
+    if (!raw) return null;
+    const m = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](20\d{2})$/);
+    if (m) {
+      const d = new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1])));
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const start = parse(candidate?.application_start);
+  const last = parse(candidate?.last_date);
+  const exam = parse(candidate?.exam_date);
+  if (start && last && last < start) return false;
+  if (start && exam && exam < start) return false;
+  return true;
 }
 
 function hasCurrentYearSignal(candidate) {
@@ -540,7 +629,19 @@ export function validateCandidate(
     );
   }
 
+  if (hasAdministrativeContent(candidate) &&
+      !(RECRUITMENT_TYPES.has(type) && hasStrongTypeSignal(candidate))) {
+    errors.push("Administrative/policy content is not a publishable update.");
+  }
+
+  if (!hasConsistentDates(candidate)) {
+    errors.push("Application, last-date, or exam-date values are inconsistent.");
+  }
+
   if (RECRUITMENT_TYPES.has(type)) {
+    if (!hasStrongTypeSignal(candidate)) {
+      errors.push("Job title lacks a strong recruitment signal.");
+    }
     if (!notificationUrl) {
       errors.push(
         "Recruitment requires a notification PDF URL."
@@ -602,6 +703,9 @@ export function validateCandidate(
   }
 
   if (DOCUMENT_TYPES.has(type)) {
+    if (!hasStrongTypeSignal(candidate) && !hasDocumentSignal(candidate)) {
+      errors.push("Document title lacks a strong signal for its declared type.");
+    }
     if (!hasDocumentSignal(candidate)) {
       errors.push(
         "Title does not contain a strong signal for this document type."
