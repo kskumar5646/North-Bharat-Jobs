@@ -2062,8 +2062,18 @@ Sitemap: ${siteOrigin(request)}/sitemap.xml
     env,
     ctx
   ) {
-    ctx.waitUntil(
-      runMonitor(env)
+    /*
+      The frequent 5-minute Cron only monitors one source.
+      The daily 02:17 UTC Cron additionally performs the
+      bounded 365-day retention cleanup.
+    */
+    const maintenance =
+      event?.cron === '17 2 * * *';
+
+    await runMonitor(
+      env,
+      null,
+      { maintenance }
     );
   }
 };
