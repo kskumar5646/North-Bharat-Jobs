@@ -1,6 +1,7 @@
 /*
   North Bharat Jobs
   Official-source discovery engine
+  // GitHub write-access test
 
   Rules:
   - Official source is authoritative.
