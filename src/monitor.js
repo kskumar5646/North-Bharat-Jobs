@@ -492,12 +492,15 @@ async function purgeExpiredItems(
 
   /* Daily bounded cleanup: one batch only, avoiding an unbounded CPU loop. */
   const result = await db
-    .prepare(`DELETE FROM items
+    .prepare(`
+      DELETE FROM items
       WHERE id IN (
-        SELECT id FROM items
+        SELECT id
+        FROM items
         WHERE COALESCE(published_at, created_at) < ?
         LIMIT ?
-      )\`)
+      )
+    `)
     .bind(cutoff, RETENTION_DELETE_BATCH)
     .run();
 
@@ -509,7 +512,7 @@ async function purgeExpiredItems(
 /* Existing item lookup                                                       */
 /* -------------------------------------------------------------------------- */
 
-(
+async function findExistingItem(
   db,
   candidate,
   key
