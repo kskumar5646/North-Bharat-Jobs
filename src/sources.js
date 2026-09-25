@@ -996,6 +996,26 @@ function classify(title, body, links) {
 /* Date extraction                                                            */
 /* -------------------------------------------------------------------------- */
 
+function parseDateValue(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  let m = raw.match(/^(\d{1,2})[\\/.-](\d{1,2})[\\/.-](20\\d{2})$/);
+  if (m) return new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1])));
+  m = raw.match(/^(\d{1,2})\\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\s+(20\\d{2})$/i);
+  if (m) return new Date(Date.UTC(Number(m[3]), ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[2].slice(0,3).toLowerCase()), Number(m[1])));
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function validateExtractedDates(fields) {
+  const start = parseDateValue(fields.application_start);
+  const last = parseDateValue(fields.last_date);
+  const exam = parseDateValue(fields.exam_date);
+  if (start && last && last < start) fields.last_date = null;
+  if (start && exam && exam < start) fields.exam_date = null;
+  return fields;
+}
+
 function extractDate(text, labels = []) {
   const source = String(text || '');
 
@@ -1455,7 +1475,7 @@ function extractCandidateFields(
   const text =
     String(body || '').slice(0, 30000);
 
-  return {
+  const fields = {
     application_start:
       extractDate(
         text,
@@ -1563,6 +1583,8 @@ function extractCandidateFields(
     organization:
       source?.name || null
   };
+
+  return validateExtractedDates(fields);
 }
 
 
