@@ -26,11 +26,11 @@ import {
 /* -------------------------------------------------------------------------- */
 
 // Keep each Cron invocation comfortably below the Workers Free CPU budget.
-const MAX_LINKS = 80;
-const MAX_PAGES = 6;
-const MAX_DEPTH = 2;
-const MAX_LINKS_PER_PAGE = 40;
-const FETCH_TIMEOUT_MS = 8000;
+const MAX_LINKS = 20;
+const MAX_PAGES = 1;
+const MAX_DEPTH = 0;
+const MAX_LINKS_PER_PAGE = 12;
+const FETCH_TIMEOUT_MS = 5000;
 
 const CURRENT_YEAR = new Date().getUTCFullYear();
 const MIN_ACCEPTABLE_YEAR = CURRENT_YEAR - 1;
@@ -610,12 +610,7 @@ async function fetchWithTimeout(url) {
 */
 
 const SSC_SEED_PATHS = [
-  '/',
-  '/notice-board',
-  '/noticeboard',
-  '/notices',
-  '/portal/noticeboard',
-  '/for-candidates'
+  '/notice-board'
 ];
 
 
