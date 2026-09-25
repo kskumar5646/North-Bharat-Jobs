@@ -2083,6 +2083,45 @@ async function runPortalsForFallback(
 }
 
 
+
+/* -------------------------------------------------------------------------- */
+/* Candidate safety normalization                                             */
+/* -------------------------------------------------------------------------- */
+
+function monitorDateKey(value) {
+  const s = String(value || '').trim();
+  if (!s) return null;
+  let m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+  if (m) {
+    const d=Number(m[1]), mo=Number(m[2]), y=Number(m[3]);
+    if (mo>=1 && mo<=12 && d>=1 && d<=31) return `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  }
+  m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/);
+  if (m) {
+    const months={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+    const mo=months[m[2].slice(0,3).toLowerCase()];
+    if (mo) return `${m[3]}-${String(mo).padStart(2,'0')}-${String(Number(m[1])).padStart(2,'0')}`;
+  }
+  return null;
+}
+function sameMonitorUrl(a,b) {
+  if(!a||!b) return false;
+  try{return normalizeUrl(a)===normalizeUrl(b);}catch{return String(a).trim().replace(/\/$/,'')===String(b).trim().replace(/\/$/,'');}
+}
+function sanitizeMonitorCandidate(candidate) {
+  const c={...(candidate||{})};
+  if(c.type!=='job'&&c.type!=='recruitment') return c;
+  const start=monitorDateKey(c.application_start), last=monitorDateKey(c.last_date), exam=monitorDateKey(c.exam_date);
+  if(start&&last&&exam&&start===last&&last===exam){c.application_start=null;c.last_date=null;c.exam_date=null;}
+  else{if(start&&last&&last<start)c.last_date=null;if(start&&exam&&exam<start)c.exam_date=null;}
+  const apply=String(c.apply_url||'');
+  if(apply&&(isPdfUrl(apply)||sameMonitorUrl(apply,c.official_url)||sameMonitorUrl(apply,c.canonical_url)||sameMonitorUrl(apply,c.source_url)||/(?:exam_files\.php\?click=yes|notifications?\.aspx|recruitment\.php|advertisement\.php|index\.php(?:\?|$))/i.test(apply))) c.apply_url=null;
+  if(c.notification_url&&sameMonitorUrl(c.notification_url,c.apply_url)) c.notification_url=null;
+  return c;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Official source processing                                                 */
 /* -------------------------------------------------------------------------- */
@@ -2150,8 +2189,9 @@ async function runOfficial(
     );
 
     for (
-      const candidate of limited
+      let candidate of limited
     ) {
+      candidate = sanitizeMonitorCandidate(candidate);
       stats.discovered++;
 
       let verification;
