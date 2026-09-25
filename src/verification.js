@@ -1015,50 +1015,37 @@ export function verificationSummary(
 export function canonicalNotificationKey(
   candidate = {}
 ) {
-  const type =
-    lower(candidate.type);
+  const type = lower(candidate.type);
+  const organization = lower(candidate.organization);
+  const title = lower(candidate.title);
 
-  const organization =
-    lower(
-      candidate.organization
-    );
-
-  const title =
-    lower(candidate.title);
-
-  const notificationUrl =
-    normalizeUrl(
-      candidate.notification_url
-    );
-
-  const officialUrl =
-    normalizeUrl(
-      candidate.official_url
-    );
+  const canonicalUrl = normalizeUrl(candidate.canonical_url);
+  const officialUrl = normalizeUrl(candidate.official_url);
+  const notificationUrl = normalizeUrl(candidate.notification_url);
 
   /*
-    Prefer the notification PDF as the
-    stable identity of a recruitment.
+    Identity order:
+    1. Recruitment/detail page (stable across date/vacancy revisions).
+    2. Official URL.
+    3. Notification PDF.
+    4. Title fallback.
+
+    A changed PDF/corrigendum must not create a new recruitment when
+    the same official detail page remains the canonical identity.
   */
-  if (notificationUrl) {
-    return [
-      "notification",
-      notificationUrl,
-    ].join("|");
+  if (canonicalUrl) {
+    return ["canonical", canonicalUrl].join("|");
   }
 
   if (officialUrl) {
-    return [
-      "official",
-      officialUrl,
-    ].join("|");
+    return ["official", officialUrl].join("|");
   }
 
-  return [
-    type,
-    organization,
-    title,
-  ]
+  if (notificationUrl) {
+    return ["notification", notificationUrl].join("|");
+  }
+
+  return [type, organization, title]
     .filter(Boolean)
     .join("|");
 }
