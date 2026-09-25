@@ -715,7 +715,11 @@ function makeLinkedNotificationCandidates(page, source) {
       continue;
     }
 
-    if (urlHasOldYear(link.url) || isBlockedPath(link.url)) {
+    if (
+      urlHasOldYear(link.url) ||
+      isBlockedPath(link.url) ||
+      ADMIN_DOCUMENT_PATTERN.test(`${link.text} ${link.url}`)
+    ) {
       continue;
     }
 
@@ -1191,6 +1195,14 @@ function findNotificationLink(
       }
 
       if (isBlockedPath(link.url)) {
+        return false;
+      }
+
+      if (
+        ADMIN_DOCUMENT_PATTERN.test(
+          `${link.text} ${link.url}`
+        )
+      ) {
         return false;
       }
 
