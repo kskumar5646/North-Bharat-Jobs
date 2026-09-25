@@ -25,11 +25,12 @@ import {
 /* Configuration                                                              */
 /* -------------------------------------------------------------------------- */
 
-const MAX_LINKS = 300;
-const MAX_PAGES = 40;
-const MAX_DEPTH = 3;
-const MAX_LINKS_PER_PAGE = 180;
-const FETCH_TIMEOUT_MS = 12000;
+// Keep each Cron invocation comfortably below the Workers Free CPU budget.
+const MAX_LINKS = 80;
+const MAX_PAGES = 6;
+const MAX_DEPTH = 2;
+const MAX_LINKS_PER_PAGE = 40;
+const FETCH_TIMEOUT_MS = 8000;
 
 const CURRENT_YEAR = new Date().getUTCFullYear();
 const MIN_ACCEPTABLE_YEAR = CURRENT_YEAR - 1;
