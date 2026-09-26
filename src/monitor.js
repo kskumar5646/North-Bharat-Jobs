@@ -18,7 +18,8 @@
   10. Real revisions only are stored.
   11. Temporary official-source failure must NOT destroy
       an already published record.
-  12. Records older than 365 days are deleted in bounded batches.
+  12. Records older than 365 days are archived in bounded batches;
+      history and deduplication identity are preserved.
 */
 
 import {
@@ -490,14 +491,25 @@ async function purgeExpiredItems(
     now.getTime() - RETENTION_DAYS * 86_400_000
   ).toISOString();
 
-  /* Daily bounded cleanup: one batch only, avoiding an unbounded CPU loop. */
+  /*
+    Daily bounded cleanup: archive instead of DELETE.
+    Public queries can exclude status='archived', while notification
+    identity, revisions and history remain available for deduplication
+    and audit.
+  */
   const result = await db
     .prepare(`
-      DELETE FROM items
+      UPDATE items
+      SET
+        status='archived',
+        archived_at=CURRENT_TIMESTAMP,
+        archive_reason='retention_365_days',
+        updated_at=CURRENT_TIMESTAMP
       WHERE id IN (
         SELECT id
         FROM items
         WHERE COALESCE(published_at, created_at) < ?
+          AND COALESCE(status, '') != 'archived'
         LIMIT ?
       )
     `)
@@ -721,19 +733,48 @@ function buildOfficialFields(
   const existingPublished =
     existing?.status === 'published';
 
+  const recruitmentType =
+    candidate?.type === 'job' ||
+    candidate?.type === 'recruitment';
+
+  const candidateHasAllRecruitmentUrls =
+    !recruitmentType ||
+    hasCompleteRecruitmentUrls(candidate);
+
+  const requiresAdminReview =
+    candidate?._requires_admin_review === true ||
+    !candidateHasAllRecruitmentUrls ||
+    (
+      recruitmentType &&
+      existing?.apply_url &&
+      isRejectedApplyUrl(existing.apply_url, candidate) &&
+      !candidate?.apply_url
+    );
+
+  /*
+    A published item may survive a temporary scan that merely loses a
+    valid URL, because the existing valid URL is preserved below.
+    But if the scanner explicitly rejects an existing URL or sanitizes
+    contradictory data, the item must move to admin verification instead
+    of silently remaining published/verified.
+  */
   const status =
-    verified
+    verified && !requiresAdminReview
       ? 'published'
-      : existingPublished
-        ? 'published'
-        : 'verification_required';
+      : requiresAdminReview
+        ? 'verification_required'
+        : existingPublished
+          ? 'published'
+          : 'verification_required';
 
   const verificationStatus =
-    verified
+    verified && !requiresAdminReview
       ? 'verified'
-      : existingPublished
-        ? 'verified'
-        : 'verification_required';
+      : requiresAdminReview
+        ? 'verification_required'
+        : existingPublished
+          ? 'verified'
+          : 'verification_required';
 
   return {
     notification_key:
@@ -873,10 +914,16 @@ function buildOfficialFields(
         source_evidence_score:
           candidate?._evidence_score || 0,
 
+        sanitized_fields:
+          candidate?._sanitized_fields || [],
+
         missing_urls:
           missingRecruitmentUrls(
             candidate
-          )
+          ),
+
+        admin_review_required:
+          requiresAdminReview
       }),
 
     last_verified_at:
@@ -2129,12 +2176,45 @@ function isRejectedApplyUrl(url, candidate = {}) {
 function sanitizeMonitorCandidate(candidate) {
   const c={...(candidate||{})};
   if(c.type!=='job'&&c.type!=='recruitment') return c;
-  const start=monitorDateKey(c.application_start), last=monitorDateKey(c.last_date), exam=monitorDateKey(c.exam_date);
-  if(start&&last&&exam&&start===last&&last===exam){c.application_start=null;c.last_date=null;c.exam_date=null;}
-  else{if(start&&last&&last<start)c.last_date=null;if(start&&exam&&exam<start)c.exam_date=null;}
+
+  const sanitizedFields = [];
+
+  const start=monitorDateKey(c.application_start);
+  const last=monitorDateKey(c.last_date);
+  const exam=monitorDateKey(c.exam_date);
+
+  if(start&&last&&exam&&start===last&&last===exam){
+    c.application_start=null;
+    c.last_date=null;
+    c.exam_date=null;
+    sanitizedFields.push('application_start','last_date','exam_date');
+  } else {
+    if(start&&last&&last<start){
+      c.last_date=null;
+      sanitizedFields.push('last_date');
+    }
+    if(start&&exam&&exam<start){
+      c.exam_date=null;
+      sanitizedFields.push('exam_date');
+    }
+  }
+
   const apply=String(c.apply_url||'');
-  if(apply&&(isPdfUrl(apply)||sameMonitorUrl(apply,c.official_url)||sameMonitorUrl(apply,c.canonical_url)||sameMonitorUrl(apply,c.source_url)||/(?:exam_files\.php\?click=yes|notifications?\.aspx|recruitment\.php|advertisement\.php|index\.php(?:\?|$))/i.test(apply))) c.apply_url=null;
-  if(c.notification_url&&sameMonitorUrl(c.notification_url,c.apply_url)) c.notification_url=null;
+  if(apply&&isRejectedApplyUrl(apply,c)){
+    c.apply_url=null;
+    sanitizedFields.push('apply_url');
+  }
+
+  if(c.notification_url&&sameMonitorUrl(c.notification_url,c.apply_url)){
+    c.notification_url=null;
+    sanitizedFields.push('notification_url');
+  }
+
+  if(sanitizedFields.length){
+    c._sanitized_fields = [...new Set(sanitizedFields)];
+    c._requires_admin_review = true;
+  }
+
   return c;
 }
 
