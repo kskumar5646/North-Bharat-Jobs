@@ -31,7 +31,7 @@ const MAX_LINKS = 20;
 const MAX_PAGES = 1;
 const MAX_DEPTH = 0;
 const MAX_LINKS_PER_PAGE = 12;
-const FETCH_TIMEOUT_MS = 5000;
+const FETCH_TIMEOUT_MS = 15000;
 
 const CURRENT_YEAR = new Date().getUTCFullYear();
 const MIN_ACCEPTABLE_YEAR = CURRENT_YEAR - 1;
