@@ -28,9 +28,9 @@ import {
 
 // Keep each Cron invocation comfortably below the Workers Free CPU budget.
 const MAX_LINKS = 20;
-const MAX_PAGES = 1;
-const MAX_DEPTH = 0;
-const MAX_LINKS_PER_PAGE = 12;
+const MAX_PAGES = 3;
+const MAX_DEPTH = 1;
+const MAX_LINKS_PER_PAGE = 8;
 const FETCH_TIMEOUT_MS = 15000;
 
 const CURRENT_YEAR = new Date().getUTCFullYear();
