@@ -804,6 +804,16 @@ async function adminApi(
       );
     }
 
+    const existing =
+      await env.DB
+        .prepare('SELECT * FROM items WHERE id=?')
+        .bind(id)
+        .first();
+
+    if (!existing) {
+      return json({ ok:false, error:'Item not found' }, 404);
+    }
+
     const result =
       await env.DB
         .prepare(`
@@ -812,11 +822,9 @@ async function adminApi(
             status='published',
             verification_status='admin_verified',
             last_verified_at=?,
-            published_at=
-              COALESCE(
-                published_at,
-                ?
-              ),
+            archived_at=NULL,
+            archive_reason=NULL,
+            published_at=COALESCE(published_at, ?),
             updated_at=CURRENT_TIMESTAMP
           WHERE id=?
         `)
@@ -853,6 +861,217 @@ async function adminApi(
     return json({
       ok: true
     });
+  }
+
+  /*
+    Edit item fields from Admin Portal.
+    Every edit creates a revision snapshot before changing the record.
+  */
+  if (
+    path === '/api/admin/item/update' &&
+    request.method === 'POST'
+  ) {
+    const body = await safeJson(request);
+    const id = Number(body.id);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return json({ ok:false, error:'Invalid id' }, 400);
+    }
+
+    const existing = await env.DB
+      .prepare('SELECT * FROM items WHERE id=?')
+      .bind(id)
+      .first();
+
+    if (!existing) {
+      return json({ ok:false, error:'Item not found' }, 404);
+    }
+
+    const allowed = [
+      'type','title','organization','category','location',
+      'description','eligibility','qualification','vacancies',
+      'age_limit','age_relaxation','fee','selection_process',
+      'salary','application_start','last_date','exam_date',
+      'how_to_apply','important_dates','official_url',
+      'apply_url','notification_url','source_url',
+      'source_name','canonical_url'
+    ];
+
+    const next = {};
+    for (const field of allowed) {
+      if (Object.prototype.hasOwnProperty.call(body, field)) {
+        next[field] = body[field] === null ? null : String(body[field]).trim();
+      }
+    }
+
+    if (next.title !== undefined && !next.title) {
+      return json({ ok:false, error:'Title cannot be empty' }, 400);
+    }
+
+    const changed = allowed.filter(field =>
+      Object.prototype.hasOwnProperty.call(next, field) &&
+      String(existing[field] ?? '') !== String(next[field] ?? '')
+    );
+
+    if (!changed.length) {
+      return json({ ok:true, changed:[] });
+    }
+
+    await env.DB
+      .prepare('INSERT INTO item_revisions(item_id,revision_no,changed_fields_json,snapshot_json) VALUES(?,?,?,?)')
+      .bind(
+        id,
+        (Number((await env.DB.prepare('SELECT COALESCE(MAX(revision_no),0) n FROM item_revisions WHERE item_id=?').bind(id).first())?.n || 0) + 1),
+        JSON.stringify(changed),
+        JSON.stringify(existing)
+      )
+      .run();
+
+    const assignments = changed.map(field => field + '=?').join(',');
+    await env.DB
+      .prepare('UPDATE items SET ' + assignments + ', verification_status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
+      .bind(...changed.map(field => next[field]), 'admin_verified', id)
+      .run();
+
+    await audit(env, admin.id, 'edit_item', 'item', id, {
+      changed_fields: changed
+    });
+
+    return json({ ok:true, changed });
+  }
+
+  /*
+    Preview current item data without publishing it.
+  */
+  if (
+    path === '/api/admin/item/preview' &&
+    request.method === 'GET'
+  ) {
+    const id = Number(url.searchParams.get('id'));
+    if (!Number.isInteger(id) || id <= 0) {
+      return json({ ok:false, error:'Invalid id' }, 400);
+    }
+
+    const item = await env.DB
+      .prepare('SELECT * FROM items WHERE id=?')
+      .bind(id)
+      .first();
+
+    if (!item) {
+      return json({ ok:false, error:'Item not found' }, 404);
+    }
+
+    return json({ ok:true, item });
+  }
+
+  /*
+    Re-run source monitoring for the item's source.
+  */
+  if (
+    path === '/api/admin/item/reverify' &&
+    request.method === 'POST'
+  ) {
+    const body = await safeJson(request);
+    const id = Number(body.id);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return json({ ok:false, error:'Invalid id' }, 400);
+    }
+
+    const item = await env.DB
+      .prepare('SELECT * FROM items WHERE id=?')
+      .bind(id)
+      .first();
+
+    if (!item) {
+      return json({ ok:false, error:'Item not found' }, 404);
+    }
+
+    const result = await runMonitor(env, item.source_name, { maintenance:false });
+
+    await audit(env, admin.id, 'reverify_item', 'item', id, {
+      source_name: item.source_name
+    });
+
+    return json({ ok:true, monitor:result });
+  }
+
+  /*
+    Archive without deleting. This preserves history and deduplication identity.
+  */
+  if (
+    path === '/api/admin/item/archive' &&
+    request.method === 'POST'
+  ) {
+    const body = await safeJson(request);
+    const id = Number(body.id);
+    const reason = String(body.reason || 'admin_archive').trim().slice(0,500);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return json({ ok:false, error:'Invalid id' }, 400);
+    }
+
+    const result = await env.DB
+      .prepare('UPDATE items SET status=?, archived_at=?, archive_reason=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
+      .bind('archived', nowIso(), reason || 'admin_archive', id)
+      .run();
+
+    if (!Number(result.meta?.changes || 0)) {
+      return json({ ok:false, error:'Item not found' }, 404);
+    }
+
+    await audit(env, admin.id, 'archive', 'item', id, { reason });
+    return json({ ok:true });
+  }
+
+  /*
+    Unpublish: remove from public listings but keep it for admin/history.
+  */
+  if (
+    path === '/api/admin/item/unpublish' &&
+    request.method === 'POST'
+  ) {
+    const body = await safeJson(request);
+    const id = Number(body.id);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return json({ ok:false, error:'Invalid id' }, 400);
+    }
+
+    const result = await env.DB
+      .prepare('UPDATE items SET status=?, verification_status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
+      .bind('verification_required', 'admin_unpublished', id)
+      .run();
+
+    if (!Number(result.meta?.changes || 0)) {
+      return json({ ok:false, error:'Item not found' }, 404);
+    }
+
+    await audit(env, admin.id, 'unpublish', 'item', id);
+    return json({ ok:true });
+  }
+
+  /*
+    Complete revision/change history for one item.
+  */
+  if (
+    path === '/api/admin/item/history' &&
+    request.method === 'GET'
+  ) {
+    const id = Number(url.searchParams.get('id'));
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return json({ ok:false, error:'Invalid id' }, 400);
+    }
+
+    const rows = (
+      await env.DB
+        .prepare('SELECT * FROM item_revisions WHERE item_id=? ORDER BY revision_no DESC LIMIT 100')
+        .bind(id)
+        .all()
+    ).results || [];
+
+    return json({ ok:true, history:rows });
   }
 
   /*
