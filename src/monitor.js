@@ -807,8 +807,12 @@ function buildOfficialFields(
 
     apply_url:
       candidate.apply_url ||
-      existing?.apply_url ||
-      null,
+      (
+        existing?.apply_url &&
+        !isRejectedApplyUrl(existing.apply_url, candidate)
+          ? existing.apply_url
+          : null
+      ),
 
     notification_url:
       candidate.notification_url ||
@@ -2110,6 +2114,18 @@ function sameMonitorUrl(a,b) {
   if(!a||!b) return false;
   try{return normalizeUrl(a)===normalizeUrl(b);}catch{return String(a).trim().replace(/\/$/,'')===String(b).trim().replace(/\/$/,'');}
 }
+function isRejectedApplyUrl(url, candidate = {}) {
+  const value = String(url || '');
+  if (!value) return false;
+  return (
+    isPdfUrl(value) ||
+    sameMonitorUrl(value, candidate.official_url) ||
+    sameMonitorUrl(value, candidate.canonical_url) ||
+    sameMonitorUrl(value, candidate.source_url) ||
+    /(?:exam_files\.php\?click=yes|notifications?\.aspx|recruitment\.php|advertisement\.php|index\.php(?:\?|$))/i.test(value)
+  );
+}
+
 function sanitizeMonitorCandidate(candidate) {
   const c={...(candidate||{})};
   if(c.type!=='job'&&c.type!=='recruitment') return c;
