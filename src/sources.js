@@ -31,7 +31,7 @@ const MAX_LINKS = 20;
 const MAX_PAGES = 3;
 const MAX_DEPTH = 1;
 const MAX_LINKS_PER_PAGE = 8;
-const FETCH_TIMEOUT_MS = 15000;
+const FETCH_TIMEOUT_MS = 25000;
 
 const CURRENT_YEAR = new Date().getUTCFullYear();
 const MIN_ACCEPTABLE_YEAR = CURRENT_YEAR - 1;
@@ -581,12 +581,23 @@ async function fetchWithTimeout(url) {
         Number(retryAfterHeader || 0) || 0
     };
   } catch (error) {
+    const timedOut =
+      error?.name === 'AbortError' ||
+      String(error?.message || '').toLowerCase().includes('operation was aborted');
+
     const wrapped = new Error(
-      `Fetch failed for ${url}: ${error?.message || error}`
+      `Fetch failed for ${url}: ${timedOut ? 'fetch timeout after ' + FETCH_TIMEOUT_MS + 'ms' : (error?.message || error)}`
     );
 
     wrapped.status =
-      Number(error?.status || 0) || 0;
+      timedOut
+        ? 408
+        : (Number(error?.status || 0) || 0);
+
+    wrapped.code =
+      timedOut
+        ? 'fetch_timeout'
+        : (error?.code || null);
 
     wrapped.retryAfter =
       Number(error?.retryAfter || 0) || 0;
