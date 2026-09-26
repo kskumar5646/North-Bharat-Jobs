@@ -1,11 +1,143 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Admin — North Bharat Jobs</title><style>body{font-family:system-ui;margin:0;background:#f5f7fb;color:#182230}header{background:#10233f;color:white;padding:18px 22px;display:flex;justify-content:space-between}main{max-width:1200px;margin:24px auto;padding:0 16px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.card{background:white;border:1px solid #dde3ec;border-radius:14px;padding:16px}.big{font-size:28px;font-weight:800}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.tabs button{border:1px solid #ccd5e2;background:white;border-radius:10px;padding:10px 14px;cursor:pointer}.panel{background:white;border:1px solid #dde3ec;border-radius:14px;padding:16px;overflow:auto}.row{padding:12px 0;border-bottom:1px solid #edf0f5}.row strong{display:block;margin-bottom:5px}.primary{background:#155eef;color:#fff;border:0;padding:9px 12px;border-radius:8px}.warn{background:#fff4d6;border:1px solid #e7c66a;padding:8px;border-radius:8px}input{padding:9px;border:1px solid #ccd5e2;border-radius:8px;margin:5px}.muted{color:#647188}@media(max-width:800px){.grid{grid-template-columns:1fr 1fr}}</style></head><body><header><strong>North Bharat Jobs — Admin Portal</strong><button onclick="logout()">Logout</button></header><main><div class="grid" id="stats"></div><div class="tabs"><button onclick="load('verification')">Verification Required</button><button onclick="load('published')">Published Jobs</button><button onclick="load('sources')">Sources</button><button onclick="load('runs')">Monitor Runs</button><button onclick="load('logs')">Verification Logs</button><button onclick="load('notifications')">Notifications</button><button onclick="load('audit')">Audit Logs</button><button onclick="load('security')">Security</button></div><div class="panel" id="panel">Loading…</div></main><script>
-async function api(u,o){const r=await fetch(u,o);if(r.status===401){location='/admin/';return null}return r.json()}
-async function boot(){const d=await api('/api/admin/dashboard');document.getElementById('stats').innerHTML=Object.entries(d.stats).map(([k,v])=>'<div class="card"><div>'+k.replaceAll('_',' ')+'</div><div class="big">'+v+'</div></div>').join('');load('verification')}
-async function load(kind){if(kind==='security'){panel.innerHTML='<h2>Security</h2><p class="muted">The password is never stored in GitHub. The initial password comes from the Worker secret and can then be changed here.</p><form onsubmit="changePass(event)"><input id="cp" type="password" placeholder="Current password" required><input id="np" type="password" placeholder="New password (10+ chars)" required><button class="primary">Change password</button></form><hr><form onsubmit="changeEmail(event)"><input id="em" type="email" placeholder="New email" required><button class="primary">Change email</button></form>';return}
-let url=kind==='verification'||kind==='published'?'/api/admin/items':kind==='sources'?'/api/admin/sources':kind==='runs'?'/api/admin/runs':kind==='logs'?'/api/admin/verification-logs':kind==='notifications'?'/api/admin/notifications':'/api/admin/audit';let d=await api(url);if(!d)return;let arr=d.items||d.sources||d.runs||d.logs||d.notifications||[];if(kind==='verification')arr=arr.filter(x=>x.status==='verification_required');if(kind==='published')arr=arr.filter(x=>x.status==='published');panel.innerHTML='<h2>'+kind.replaceAll('_',' ')+'</h2>'+arr.map(x=>'<div class="row"><strong>'+String(x.title||x.name||x.event_type||x.kind||('Run '+x.id))+'</strong><div>'+JSON.stringify(x).slice(0,900)+'</div>'+(kind==='verification'?'<button class="primary" onclick="verify('+x.id+')">Verify & Publish</button> <button class="warn" onclick="reject('+x.id+')">Reject</button>':'')+'</div>').join('')||'<p>No records.</p>'}
-async function verify(id){await api('/api/admin/item/verify',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id})});load('verification')}
-async function reject(id){await api('/api/admin/item/reject',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id})});load('verification')}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin Portal — North Bharat Jobs</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:#f5f7fb;color:#182230}
+header{background:#10233f;color:#fff;padding:16px 20px;display:flex;justify-content:space-between;align-items:center}
+main{max-width:1300px;margin:22px auto;padding:0 14px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.card,.panel{background:#fff;border:1px solid #dde3ec;border-radius:14px;padding:15px}
+.big{font-size:27px;font-weight:800}.tabs{display:flex;gap:7px;flex-wrap:wrap;margin:16px 0}
+button{border:1px solid #ccd5e2;background:#fff;border-radius:9px;padding:9px 12px;cursor:pointer}
+.primary{background:#155eef;color:#fff;border-color:#155eef}.danger{background:#fff0f0}.warn{background:#fff7dd}
+.row{padding:13px 0;border-bottom:1px solid #edf0f5}.row strong{display:block;margin-bottom:5px}
+.muted{color:#647188}.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
+.editor{display:grid;grid-template-columns:1fr 1fr;gap:10px}.editor label{font-size:12px;font-weight:700}
+.editor input,.editor textarea{width:100%;box-sizing:border-box;padding:9px;border:1px solid #ccd5e2;border-radius:8px;margin-top:4px}
+.editor textarea{min-height:70px;resize:vertical}.full{grid-column:1/-1}
+.preview{background:#f8fafc;border:1px solid #e2e7ef;border-radius:12px;padding:14px}
+@media(max-width:800px){.grid{grid-template-columns:1fr 1fr}.editor{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+<strong>North Bharat Jobs — Admin Portal</strong>
+<button onclick="logout()">Logout</button>
+</header>
+<main>
+<div class="grid" id="stats"></div>
+<div class="tabs">
+<button onclick="load('verification')">Verification Required</button>
+<button onclick="load('published')">Published</button>
+<button onclick="load('sources')">Sources</button>
+<button onclick="load('runs')">Monitor Runs</button>
+<button onclick="load('logs')">Verification Logs</button>
+<button onclick="load('notifications')">Notifications</button>
+<button onclick="load('audit')">Audit Logs</button>
+<button onclick="load('security')">Security</button>
+</div>
+<div class="panel" id="panel">Loading…</div>
+</main>
+<script>
+let currentItem=null;
+
+async function api(u,o){
+  const r=await fetch(u,o);
+  if(r.status===401){location='/admin/';return null}
+  return r.json();
+}
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function val(v){return v==null?'':String(v)}
+
+async function boot(){
+  const d=await api('/api/admin/dashboard');
+  if(!d)return;
+  document.getElementById('stats').innerHTML=Object.entries(d.stats).map(([k,v])=>
+    '<div class="card"><div>'+esc(k.replaceAll('_',' '))+'</div><div class="big">'+esc(v)+'</div></div>'
+  ).join('');
+  load('verification');
+}
+
+async function load(kind){
+  if(kind==='security'){
+    panel.innerHTML='<h2>Security</h2><p class="muted">Password is stored only as a salted hash. Initial credentials come from Worker secrets.</p><form onsubmit="changePass(event)"><input id="cp" type="password" placeholder="Current password" required><input id="np" type="password" placeholder="New password (10+ chars)" required><button class="primary">Change password</button></form><hr><form onsubmit="changeEmail(event)"><input id="em" type="email" placeholder="New email" required><button class="primary">Change email</button></form>';
+    return;
+  }
+  const url=kind==='verification'||kind==='published'?'/api/admin/items':
+    kind==='sources'?'/api/admin/sources':
+    kind==='runs'?'/api/admin/runs':
+    kind==='logs'?'/api/admin/verification-logs':
+    kind==='notifications'?'/api/admin/notifications':'/api/admin/audit';
+  const d=await api(url); if(!d)return;
+  let arr=d.items||d.sources||d.runs||d.logs||d.notifications||[];
+  if(kind==='verification')arr=arr.filter(x=>x.status==='verification_required');
+  if(kind==='published')arr=arr.filter(x=>x.status==='published');
+  panel.innerHTML='<h2>'+esc(kind.replaceAll('_',' '))+'</h2>'+
+    (arr.map(x=>{
+      const title=x.title||x.name||x.event_type||x.kind||('Run '+x.id);
+      if(!x.id)return '<div class="row"><strong>'+esc(title)+'</strong><div>'+esc(JSON.stringify(x).slice(0,1000))+'</div></div>';
+      return '<div class="row"><strong>#'+esc(x.id)+' — '+esc(title)+'</strong><div class="muted">'+esc(x.status||x.event_type||x.role||'')+'</div>'+
+        ((kind==='verification'||kind==='published')?
+          '<div class="actions"><button class="primary" onclick="editItem('+Number(x.id)+')">Edit</button><button onclick="previewItem('+Number(x.id)+')">Preview</button><button onclick="historyItem('+Number(x.id)+')">History</button><button onclick="reverify('+Number(x.id)+')">Re-verify</button>'+
+          (kind==='verification'?'<button onclick="verify('+Number(x.id)+')">Approve & Publish</button><button class="warn" onclick="reject('+Number(x.id)+')">Reject</button>':'<button class="warn" onclick="unpublish('+Number(x.id)+')">Unpublish</button>')+
+          '<button class="danger" onclick="archive('+Number(x.id)+')">Archive</button></div>':'')+
+        '</div>';
+    }).join('')||'<p>No records.</p>');
+}
+
+const fields=[
+ ['title','Title'],['organization','Organization'],['type','Type'],['category','Category'],['location','Location'],
+ ['description','Description'],['eligibility','Eligibility'],['qualification','Qualification'],['vacancies','Vacancies'],
+ ['age_limit','Age Limit'],['age_relaxation','Age Relaxation'],['fee','Fee'],['selection_process','Selection Process'],
+ ['salary','Salary'],['application_start','Application Start'],['last_date','Last Date'],['exam_date','Exam Date'],
+ ['how_to_apply','How to Apply'],['important_dates','Important Dates'],['official_url','Official Website'],
+ ['notification_url','Notification PDF'],['apply_url','Apply Online URL'],['source_url','Source URL'],
+ ['source_name','Source Name'],['canonical_url','Canonical URL']
+];
+
+async function editItem(id){
+  const d=await api('/api/admin/item/preview?id='+id); if(!d)return;
+  currentItem=d.item;
+  panel.innerHTML='<h2>Edit #'+esc(id)+'</h2><p class="muted">Save creates a revision/change-log entry. Publishing is a separate final action.</p>'+
+    '<div class="editor">'+fields.map(([k,l])=>'<label>'+esc(l)+(k==='description'||k==='eligibility'||k==='qualification'||k==='selection_process'||k==='how_to_apply'||k==='important_dates'?'<textarea id="f_'+k+'">'+esc(val(currentItem[k]))+'</textarea>':'<input id="f_'+k+'" value="'+esc(val(currentItem[k]))+'">')+'</label>').join('')+
+    '</div><div class="actions"><button class="primary" onclick="saveEdit()">Save Changes</button><button onclick="load('+(currentItem.status==='published'?'published':'verification')+')">Cancel</button></div>';
+}
+async function saveEdit(){
+  const body={id:Number(currentItem.id)};
+  fields.forEach(([k])=>{body[k]=document.getElementById('f_'+k).value});
+  const d=await api('/api/admin/item/update',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  alert(d&&d.ok?'Saved: '+(d.changed||[]).join(', '):(d&&d.error)||'Save failed');
+  if(d&&d.ok)load(currentItem.status==='published'?'published':'verification');
+}
+async function previewItem(id){
+  const d=await api('/api/admin/item/preview?id='+id); if(!d)return;
+  const x=d.item;
+  panel.innerHTML='<h2>Preview #'+esc(id)+'</h2><div class="preview"><h1>'+esc(x.title)+'</h1><p><b>'+esc(x.organization||'')+'</b></p>'+
+    fields.filter(([k])=>x[k]!=null&&String(x[k]).trim()!=='').map(([k,l])=>'<p><b>'+esc(l)+':</b> '+esc(x[k])+'</p>').join('')+
+    '<div class="actions"><button onclick="editItem('+id+')">Edit</button><button class="primary" onclick="load('+(x.status==='published'?'published':'verification')+')">Back</button></div></div>';
+}
+async function historyItem(id){
+  const d=await api('/api/admin/item/history?id='+id); if(!d)return;
+  panel.innerHTML='<h2>History #'+esc(id)+'</h2>'+
+    (d.history||[]).map(x=>'<div class="row"><strong>Revision '+esc(x.revision_no)+'</strong><div>Changed: '+esc(x.changed_fields_json||'')+'</div><pre>'+esc(x.snapshot_json||'')+'</pre></div>').join('')||'<p>No revisions yet.</p>';
+}
+async function postAction(path,id){
+  const d=await api(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id})});
+  if(!d)return;
+  alert(d.ok?'Done':(d.error||'Action failed'));
+  if(d.ok)load('verification');
+}
+async function verify(id){await postAction('/api/admin/item/verify',id)}
+async function reject(id){await postAction('/api/admin/item/reject',id)}
+async function reverify(id){await postAction('/api/admin/item/reverify',id)}
+async function unpublish(id){await postAction('/api/admin/item/unpublish',id)}
+async function archive(id){const reason=prompt('Archive reason','admin_archive');if(reason!==null){const d=await api('/api/admin/item/archive',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id,reason})});alert(d&&d.ok?'Archived':(d&&d.error)||'Failed');if(d&&d.ok)load('published')}}
 async function changePass(e){e.preventDefault();const r=await api('/api/admin/password',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({current:cp.value,next:np.value})});alert(r&&r.ok?'Password changed':(r&&r.error)||'Error')}
 async function changeEmail(e){e.preventDefault();const r=await api('/api/admin/email',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:em.value})});alert(r&&r.ok?'Email changed':(r&&r.error)||'Error')}
-async function logout(){await fetch('/api/admin/logout',{method:'POST'});location='/admin/'}boot();
-</script></body></html>
+async function logout(){await fetch('/api/admin/logout',{method:'POST'});location='/admin/'}
+boot();
+</script>
+</body>
+</html>
