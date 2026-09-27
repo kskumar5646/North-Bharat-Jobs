@@ -34,10 +34,8 @@ const MAX_LINKS_PER_PAGE = 8;
 const FETCH_TIMEOUT_MS = 25000;
 
 // Secondary portals are discovery-only. They must never become a source of
-// publishable prose. FreeJobAlert's current Terms expressly prohibit scraping
-// or systematic downloading, so automated crawling is disabled until written
-// permission is available. Sarkari Result is limited to low-volume public GETs
-// and robots.txt compliance; security/access controls are never bypassed.
+// publishable prose. All portal crawls are normal public HTTPS GETs only,
+// with robots.txt and access/security controls respected. No bypass is used.
 const PORTAL_POLICY = {
   'sarkariresult.com': {
     enabled: true,
@@ -46,9 +44,19 @@ const PORTAL_POLICY = {
     maxLinksPerPage: 5,
     mode: 'factual_metadata_only'
   },
-  'freejobalert.com': {
-    enabled: false,
-    reason: 'automated_crawling_disabled_pending_permission'
+  'employmentnews.gov.in': {
+    enabled: true,
+    maxPages: 3,
+    maxDepth: 1,
+    maxLinksPerPage: 6,
+    mode: 'factual_metadata_only'
+  },
+  'ncs.gov.in': {
+    enabled: true,
+    maxPages: 3,
+    maxDepth: 1,
+    maxLinksPerPage: 6,
+    mode: 'factual_metadata_only'
   }
 };
 
