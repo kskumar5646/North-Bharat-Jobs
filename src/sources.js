@@ -2323,11 +2323,281 @@ export async function discoverPortal(
 }
 
 
+
+/* -------------------------------------------------------------------------- */
+/* Portal NEW-ONLY discovery                                                  */
+/* -------------------------------------------------------------------------- */
+
+/*
+  New-only portal scanner:
+  - Fetches only the portal index/homepage as the discovery surface.
+  - Previously-seen detail/PDF URLs are never fetched again.
+  - Only newly discovered recruitment-like links are opened.
+  - Portal prose is never promoted to publishable official content.
+*/
+export async function discoverPortalNewOnly(
+  source,
+  seenUrls = []
+) {
+  assertPortalCrawlAllowed(source);
+
+  const robotsPolicy =
+    await fetchPortalRobotsPolicy(source);
+
+  const homepage =
+    normalizeUrl(source.base_url);
+
+  if (
+    !homepage ||
+    !robotsAllowed(homepage, robotsPolicy)
+  ) {
+    const error = new Error(
+      source.name +
+      ': robots.txt disallows the portal homepage; crawl stopped'
+    );
+    error.status = 403;
+    error.code = 'portal_robots_disallowed';
+    error.portal = true;
+    throw error;
+  }
+
+  const seen = new Set(
+    (seenUrls || [])
+      .map(normalizeUrl)
+      .filter(Boolean)
+  );
+
+  const first =
+    await fetchWithTimeout(
+      homepage,
+      source
+    );
+
+  if (
+    !first.ok ||
+    first.isPdf ||
+    !first.body
+  ) {
+    const error = new Error(
+      source.name +
+      ': portal homepage unavailable'
+    );
+    error.status =
+      Number(first.status || 403);
+    error.code =
+      'portal_homepage_unavailable';
+    error.portal = true;
+    throw error;
+  }
+
+  const links =
+    parseLinks(
+      first.body,
+      first.finalUrl || homepage
+    );
+
+  const policy =
+    portalPolicyFor(source);
+
+  const maxLinks =
+    Math.max(
+      1,
+      Number(
+        policy?.maxLinksPerPage || 5
+      )
+    );
+
+  const freshLinks =
+    links
+      .filter(link =>
+        isUsefulCrawlLink(
+          link,
+          source,
+          first.finalUrl || homepage,
+          robotsPolicy
+        )
+      )
+      .filter(link => {
+        const normalized =
+          normalizeUrl(link.url);
+        return (
+          normalized &&
+          !seen.has(normalized)
+        );
+      })
+      .map(link => ({
+        link,
+        score: linkPriority(
+          link,
+          textOf(first.body).slice(0, 12000)
+        )
+      }))
+      .filter(entry =>
+        entry.score >= 8 ||
+        isPdfUrl(entry.link.url) ||
+        isLikelyRecruitmentNoticeTitle(
+          entry.link.text,
+          entry.link.url
+        )
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      )
+      .slice(0, maxLinks);
+
+  const candidates = [];
+
+  for (
+    const entry of freshLinks
+  ) {
+    const link =
+      entry.link;
+
+    const normalized =
+      normalizeUrl(link.url);
+
+    if (!normalized) {
+      continue;
+    }
+
+    /*
+      A direct portal PDF is recorded only as secondary evidence.
+      We do not download/read its body here.
+    */
+    if (isPdfUrl(normalized)) {
+      candidates.push(
+        sanitizePortalCandidate({
+          type: 'job',
+          title:
+            cleanTitle(
+              link.text
+            ) ||
+            normalized
+              .split('/')
+              .pop(),
+          organization:
+            source.name,
+          category: 'job',
+          official_url: null,
+          notification_url:
+            normalized,
+          apply_url:
+            findApplyLink(
+              links,
+              first.finalUrl || homepage,
+              normalized,
+              source
+            ),
+          source_url:
+            first.finalUrl || homepage,
+          source_name:
+            source.name,
+          source_id:
+            source.id,
+          canonical_url:
+            normalized,
+          notification_key:
+            String(source.id) +
+            '|' +
+            normalized,
+          _portal_new_discovery: true,
+          _evidence: [
+            'new-portal-index-pdf'
+          ]
+        })
+      );
+      continue;
+    }
+
+    /*
+      Only a previously unseen detail URL is opened.
+      Known/old detail URLs never reach fetchWithTimeout().
+    */
+    try {
+      if (
+        !robotsAllowed(
+          normalized,
+          robotsPolicy
+        )
+      ) {
+        continue;
+      }
+
+      const response =
+        await fetchWithTimeout(
+          normalized,
+          source
+        );
+
+      if (
+        !response.ok ||
+        response.isPdf ||
+        !response.body
+      ) {
+        continue;
+      }
+
+      const page = {
+        url:
+          response.finalUrl ||
+          normalized,
+        html:
+          response.body,
+        depth: 0,
+        fallbackTitle:
+          link.text ||
+          source.name
+      };
+
+      page.links =
+        parseLinks(
+          page.html,
+          page.url
+        );
+
+      const candidate =
+        makeCandidate(
+          page,
+          source
+        );
+
+      if (
+        candidate &&
+        (
+          candidate.type === 'job' ||
+          candidate.type === 'recruitment'
+        )
+      ) {
+        candidate._portal_new_discovery = true;
+
+        candidates.push(
+          sanitizePortalCandidate(
+            candidate
+          )
+        );
+      }
+    } catch {
+      /*
+        A single new portal link must not stop
+        the rest of the daily discovery.
+      */
+    }
+  }
+
+  return deduplicateCandidates(
+    candidates
+  ).map(
+    sanitizePortalCandidate
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /* Default export                                                             */
 /* -------------------------------------------------------------------------- */
 
 export default {
   discoverFromSource,
-  discoverPortal
+  discoverPortal,
+  discoverPortalNewOnly
 };
