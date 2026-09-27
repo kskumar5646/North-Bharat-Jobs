@@ -134,6 +134,58 @@ const BLOCKED_FILE_PATTERN =
 const LOGIN_ONLY_PATTERN =
   /\b(?:login|sign\s*in|candidate\s+login|user\s+login|forgot\s+password|password|username)\b/i;
 
+/* -------------------------------------------------------------------------- */
+/* Portal no-bypass safety guard                                               */
+/* -------------------------------------------------------------------------- */
+
+/* Portal 1/2: normal public HTTPS GET only. Never bypass CAPTCHA,
+   Cloudflare/WAF/security challenges, login/authentication, access controls,
+   or rate limits. No credentials, cookies, proxy/IP rotation, stealth,
+   challenge solving, browser automation, or alternate/private endpoints. */
+function isPortalSource(source) {
+  return String(source?.role || '').toLowerCase() === 'portal';
+}
+
+function assertPortalFinalUrl(source, finalUrl) {
+  if (!isPortalSource(source)) return;
+  try {
+    if (!sameHostOrAllowed(finalUrl, source.allowed_domains, source.base_url)) {
+      const error = new Error(source.name + ': redirect left the configured portal domain; access stopped');
+      error.status = 403;
+      error.code = 'portal_external_redirect_blocked';
+      error.portal = true;
+      throw error;
+    }
+  } catch (error) {
+    if (error?.code === 'portal_external_redirect_blocked') throw error;
+    const stopped = new Error(source.name + ': portal redirect validation failed; access stopped');
+    stopped.status = 403;
+    stopped.code = 'portal_redirect_validation_failed';
+    stopped.portal = true;
+    throw stopped;
+  }
+}
+
+function assertPortalSecurityResponse(source, response, requestedUrl) {
+  if (!isPortalSource(source)) return;
+  const body = textOf(response?.body || '').slice(0, 12000);
+  const combined = normalizedText(body + ' ' + (response?.finalUrl || requestedUrl || ''));
+  if (/captcha|verify you are human|human verification|security check|cloudflare ray id|just a moment|checking your browser|enable javascript and cookies|access denied|forbidden|too many requests|rate limit/i.test(combined)) {
+    const error = new Error(source.name + ': security/access challenge detected; no bypass attempted');
+    error.status = Number(response?.status || 0) || 403;
+    error.code = 'portal_security_challenge';
+    error.portal = true;
+    throw error;
+  }
+  if (/\b(?:login|sign\s*in|username|password|forgot\s+password)\b/i.test(body) && body.length < 5000) {
+    const error = new Error(source.name + ': login/authentication page detected; no login attempted');
+    error.status = 401;
+    error.code = 'portal_login_required';
+    error.portal = true;
+    throw error;
+  }
+}
+
 
 /* -------------------------------------------------------------------------- */
 /* Text helpers                                                               */
@@ -518,7 +570,7 @@ function isUsefulCrawlLink(link, source, currentUrl) {
 /* Fetch                                                                      */
 /* -------------------------------------------------------------------------- */
 
-async function fetchWithTimeout(url) {
+async function fetchWithTimeout(url, source = null) {
   const controller = new AbortController();
 
   const timer = setTimeout(
@@ -550,6 +602,8 @@ async function fetchWithTimeout(url) {
 
     const finalUrl = response.url || url;
 
+    assertPortalFinalUrl(source, finalUrl);
+
     const isPdf =
       contentType.includes('application/pdf') ||
       isPdfUrl(finalUrl);
@@ -570,7 +624,7 @@ async function fetchWithTimeout(url) {
     const retryAfterHeader =
       response.headers.get('retry-after');
 
-    return {
+    const result = {
       ok: response.ok,
       status: response.status,
       body,
@@ -580,6 +634,10 @@ async function fetchWithTimeout(url) {
       retryAfter:
         Number(retryAfterHeader || 0) || 0
     };
+
+    assertPortalSecurityResponse(source, result, url);
+
+    return result;
   } catch (error) {
     const timedOut =
       error?.name === 'AbortError' ||
@@ -643,7 +701,7 @@ async function discoverSSC(source) {
 
   for (const seedUrl of seedUrls) {
     try {
-      const response = await fetchWithTimeout(seedUrl);
+      const response = await fetchWithTimeout(seedUrl, source);
 
       if (
         !response.ok ||
@@ -2025,7 +2083,8 @@ export async function discoverFromSource(
 
   const first =
     await fetchWithTimeout(
-      homepage
+      homepage,
+      source
     );
 
   if (!first.ok) {
