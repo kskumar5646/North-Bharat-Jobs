@@ -7,12 +7,13 @@
   1. Scan official sources.
   2. Verify official candidates.
   3. Publish only when official evidence is complete.
-  4. If notification/apply URL is missing:
-       Official -> Portal 1 -> Portal 2
-  5. Portal information is secondary evidence only.
-  6. Portal data NEVER becomes automatically verified/published.
-  7. If official confirmation is still missing:
-       verification_required + admin notification.
+  4. Official-source branch and Portal branch are completely independent.
+  5. Branch B:
+       Portal 1 + Portal 2 -> factual comparison -> Google cross-check
+       -> data/URL gates -> publish OR Admin.
+  6. Branch B NEVER calls official-source verification.
+  7. Google is supporting cross-check evidence, not an authority.
+  8. Any mismatch/error/unavailable/uncertainty -> Admin verification.
   8. Existing recruitment is updated in-place.
   9. No duplicate for a revised notification.
   10. Real revisions only are stored.
@@ -56,9 +57,7 @@ const RETENTION_DELETE_BATCH = 100;
 const PORTAL_SCAN_DAYS = 1;
 const PORTAL_SEEN_URL_LIMIT = 2000;
 const PORTAL_NEW_CANDIDATE_LIMIT = 8;
-const PORTAL_SCAN_DAYS = 1;
-const PORTAL_SEEN_URL_LIMIT = 2000;
-const PORTAL_NEW_CANDIDATE_LIMIT = 8;
+const PORTAL_EVIDENCE_TTL_DAYS = 2;
 
 
 
@@ -1487,173 +1486,107 @@ async function googleCrossCheck(env, candidate) {
   No portal candidate can become published merely because
   a portal found it.
 */
-async function queuePortalCandidateForVerification(
-  db,
-  env,
-  candidate,
-  portal,
-  now,
-  stats
-) {
-  const key =
-    candidateKey(candidate);
-
-  if (!key) {
-    return;
-  }
-
-  const urlReview = portalUrlReview(candidate, portal);
-  const google = await googleCrossCheck(env, candidate);
-
-  const existing =
-    await findExistingItem(
-      db,
-      candidate,
-      key
-    );
-
-  if (existing) {
-    await recordEvent(
-      db,
-      {
-        itemId: existing.id,
-        sourceId: portal.id,
-        eventType: 'portal_new_discovery_existing_item',
-        severity: 'info',
-        message:
-          `Portal discovered an existing recruitment: ${candidate.title}`
-      }
-    );
-    return;
-  }
-
-  const slug =
-    `${slugify(candidate.title || 'job')}-${(
-      await sha256Hex(key)
-    ).slice(0, 8)}`;
-
-  await db.prepare(`
-    INSERT OR IGNORE INTO items(
-      slug,
-      notification_key,
-      type,
-      title,
-      organization,
-      category,
-      location,
-      description,
-      eligibility,
-      qualification,
-      vacancies,
-      age_limit,
-      age_relaxation,
-      fee,
-      selection_process,
-      salary,
-      application_start,
-      last_date,
-      exam_date,
-      how_to_apply,
-      important_dates,
-      official_url,
-      apply_url,
-      notification_url,
-      source_url,
-      source_name,
-      source_id,
-      canonical_url,
-      status,
-      verification_status,
-      confidence_score,
-      evidence_json,
-      last_seen_at
-    )
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).bind(
-    slug,
-    key,
-    candidate.type || 'job',
-    candidate.title || null,
-    candidate.organization || null,
-    candidate.category || 'job',
-    candidate.location || null,
-    null,
-    candidate.eligibility || null,
-    candidate.qualification || null,
-    candidate.vacancies || null,
-    candidate.age_limit || null,
-    candidate.age_relaxation || null,
-    candidate.fee || null,
-    candidate.selection_process || null,
-    candidate.salary || null,
-    candidate.application_start || null,
-    candidate.last_date || null,
-    candidate.exam_date || null,
-    null,
-    null,
-    null,
-    null,
-    candidate.notification_url || null,
-    candidate.source_url || null,
-    portal.name,
-    portal.id,
-    candidate.canonical_url || candidate.source_url || null,
-    'verification_required',
-    'secondary_pending',
-    0,
-    safeJson({
-      authority: 'secondary_only',
-      verification_stage: 'secondary_evidence',
-      publishable_from_portal: false,
-      portal_source_id: portal.id,
-      portal_discovery: true,
-      google_verification: google,
-      url_review: urlReview
-    }),
-    iso(now)
-  ).run();
-
-  const created =
-    await db.prepare(`
-      SELECT id
-      FROM items
-      WHERE notification_key=?
-      LIMIT 1
-    `).bind(key).first();
-
-  await notify(
-    db,
-    'portal_verification',
-    'Portal discovery requires verification',
-    `${candidate.title}: secondary evidence discovered; Google cross-check status=${google.status}. Official-source verification is required before publish.`,
-    created?.id || null
-  );
-
-  await recordEvent(
-    db,
-    {
-      itemId: created?.id || null,
-      sourceId: portal.id,
-      eventType: 'portal_new_discovery',
-      severity: 'warning',
-      message:
-        `New portal discovery queued for verification: ${candidate.title}`,
-      evidence: {
-        authority: 'secondary_only',
-        verification_stage: 'secondary_evidence',
-        publishable_from_portal: false
-      }
-    }
-  );
-
-  stats.verificationRequired++;
-
-  if (!urlReview.clean) {
-    await notify(db,'portal_url_review','Admin verification required: portal/tracking URL detected',candidate.title + ': secondary-domain or tracking/redirect URL detected. Final official URLs must be verified before publish.',created?.id || null);
-    await recordEvent(db,{itemId:created?.id || null,sourceId:portal.id,eventType:'portal_tracking_url_detected',severity:'warning',message:'Portal/tracking URL detected: '+candidate.title,evidence:{url_review:urlReview,google_verification:google}});
-  }
+function portalSecondaryIdentity(candidate) {
+  const ad = candidate?.advertisement_number || candidate?.notification_number || candidate?.advt_no || candidate?.notification_key || '';
+  const title = normalizeComparable(candidate?.title);
+  const org = normalizeComparable(candidate?.organization);
+  return ad ? org + '|' + normalizeComparable(ad) : org + '|' + title;
 }
 
+async function readPortalEvidence(db, identity) {
+  const key = 'portal_evidence:' + identity;
+  const row = await db.prepare('SELECT value FROM settings WHERE key=? LIMIT 1').bind(key).first();
+  if (!row?.value) return {};
+  try { const value = JSON.parse(row.value); return value && typeof value === 'object' ? value : {}; } catch { return {}; }
+}
+
+async function writePortalEvidence(db, identity, value) {
+  const key = 'portal_evidence:' + identity;
+  await db.prepare(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP`).bind(key, safeJson(value)).run();
+}
+
+function portalImportantFields() {
+  return ['title','organization','vacancies','qualification','eligibility','age_limit','fee','application_start','last_date','exam_date','selection_process','salary'];
+}
+
+function comparePortalCandidates(a, b) {
+  const matches = []; const mismatches = [];
+  for (const field of portalImportantFields()) {
+    const av = normalizeComparable(a?.[field]); const bv = normalizeComparable(b?.[field]);
+    if (!av || !bv) continue;
+    if (av === bv) matches.push(field);
+    else mismatches.push({field, portal1:a?.[field] ?? null, portal2:b?.[field] ?? null});
+  }
+  const identityMatch = titleSimilarity(a?.title,b?.title) && (!a?.organization || !b?.organization || titleSimilarity(a?.organization,b?.organization));
+  return {identityMatch,matches,mismatches,agreement:identityMatch && mismatches.length===0 && matches.length>=1};
+}
+
+function portalCandidateForPublicData(candidate) {
+  const c = {...(candidate || {})};
+  c.description = null; c.how_to_apply = null; c.important_dates = null;
+  return c;
+}
+
+function portalGoogleFieldCoverage(candidate, google) {
+  const results = google?.results || [];
+  const haystack = results.map(r => normalizeComparable((r.title||'')+' '+(r.snippet||'')+' '+(r.link||''))).join(' ');
+  const fields=['vacancies','qualification','age_limit','fee','application_start','last_date','exam_date','salary'];
+  const checked=[]; let confirmed=0;
+  for (const field of fields) {
+    const value=normalizeComparable(candidate?.[field]); if(!value) continue; checked.push(field);
+    const tokens=value.split(/[^a-z0-9]+/i).filter(Boolean).filter(t=>t.length>=3);
+    if(!tokens.length) continue;
+    const hits=tokens.filter(t=>haystack.includes(t)).length;
+    if(hits>=Math.max(1,Math.ceil(tokens.length*0.5))) confirmed++;
+  }
+  return {checked,confirmed,sufficient:checked.length===0 || confirmed>=Math.max(1,Math.ceil(checked.length*0.5))};
+}
+
+async function publishPortalVerifiedCandidate(db,candidate,portalEvidence,google,now,stats) {
+  const key=candidateKey(candidate); if(!key) return {published:false,reason:'missing_identity'};
+  const existing=await findExistingItem(db,candidate,key);
+  if(existing) {
+    await recordEvent(db,{itemId:existing.id,sourceId:portalEvidence?.source_id||null,eventType:'portal_google_verified_existing_item',severity:'info',message:'Portal/Google cross-check matched existing item: '+candidate.title,evidence:{verification_stage:'portal_google',google,portals:portalEvidence?.portals||[]}});
+    return {published:existing.status==='published',existing:true,id:existing.id};
+  }
+  const clean=portalCandidateForPublicData(candidate);
+  const hash=await sha256Hex(JSON.stringify({key,title:clean.title,organization:clean.organization,vacancies:clean.vacancies,qualification:clean.qualification,last_date:clean.last_date,application_start:clean.application_start,exam_date:clean.exam_date,fee:clean.fee,official_url:clean.official_url,notification_url:clean.notification_url,apply_url:clean.apply_url}));
+  const fields={notification_key:key,type:clean.type||'job',title:clean.title||null,organization:clean.organization||null,category:clean.category||'job',location:clean.location||null,description:null,eligibility:clean.eligibility||null,qualification:clean.qualification||null,vacancies:clean.vacancies||null,age_limit:clean.age_limit||null,age_relaxation:clean.age_relaxation||null,fee:clean.fee||null,selection_process:clean.selection_process||null,salary:clean.salary||null,application_start:clean.application_start||null,last_date:clean.last_date||null,exam_date:clean.exam_date||null,how_to_apply:null,important_dates:null,official_url:clean.official_url||null,apply_url:clean.apply_url||null,notification_url:clean.notification_url||null,source_url:clean.source_url||null,source_name:'Portal 1 + Portal 2 + Google',source_id:portalEvidence?.source_id||null,source_hash:hash,canonical_url:clean.canonical_url||clean.source_url||null,status:'published',verification_status:'google_verified',confidence_score:90,evidence_json:safeJson({authority:'secondary_crosscheck',verification_stage:'portal1_portal2_google',publishable_from_portal:true,portals:portalEvidence?.portals||[],portal_comparison:portalEvidence?.comparison||null,google_verification:google}),last_verified_at:iso(now),last_seen_at:iso(now),published_at:iso(now)};
+  const slug=slugify(clean.title||'job')+'-'+hash.slice(0,8);
+  const columns=Object.keys(fields); const placeholders=columns.map(()=>'?').join(',');
+  const result=await db.prepare(`INSERT INTO items(slug,${columns.join(',')},created_at,updated_at) VALUES(?,${placeholders},CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(slug,...Object.values(fields)).run();
+  const id=result.meta?.last_row_id||null; stats.published++;
+  await recordEvent(db,{itemId:id,sourceId:portalEvidence?.source_id||null,eventType:'portal_google_published',severity:'info',message:'Published after Portal 1 + Portal 2 + Google cross-check: '+clean.title,evidence:{portal_comparison:portalEvidence?.comparison||null,google}});
+  return {published:true,id};
+}
+
+async function queuePortalCandidateForVerification(db,env,candidate,portal,now,stats) {
+  const key=candidateKey(candidate); if(!key){stats.verificationRequired++;return;}
+  const urlReview=portalUrlReview(candidate,portal);
+  const identity=await sha256Hex(portalSecondaryIdentity(candidate));
+  const state=await readPortalEvidence(db,identity);
+  state.version=2; state.first_seen_at=state.first_seen_at||iso(now); state.updated_at=iso(now);
+  state[portal.id]={portal_id:portal.id,portal_name:portal.name,candidate:portalCandidateForPublicData(candidate),seen_at:iso(now)};
+  await writePortalEvidence(db,identity,state);
+  const entries=Object.keys(state).filter(k=>/^\d+$/.test(k)).map(id=>state[id]).filter(Boolean);
+  const portal1=entries.find(e=>/Sarkari Result/i.test(e.portal_name));
+  const portal2=entries.find(e=>/FreeJobAlert/i.test(e.portal_name));
+  if(!portal1 || !portal2){await recordEvent(db,{sourceId:portal.id,eventType:'portal_evidence_pending',severity:'info',message:'Waiting for both Portal 1 and Portal 2: '+candidate.title,evidence:{identity,portal_id:portal.id}});return;}
+  const comparison=comparePortalCandidates(portal1.candidate,portal2.candidate);
+  if(!comparison.agreement){stats.verificationRequired++;await notify(db,'portal_verification','Admin verification required: Portal 1/2 mismatch',candidate.title+': Portal 1 and Portal 2 contain conflicting or insufficient factual data.',null);await recordEvent(db,{sourceId:portal.id,eventType:'portal_comparison_mismatch',severity:'warning',message:'Portal 1/2 mismatch: '+candidate.title,evidence:{comparison}});return;}
+  const merged={...portal1.candidate};
+  for(const field of portalImportantFields()){merged[field]=portal1.candidate?.[field]||portal2.candidate?.[field]||null;}
+  merged.official_url=portal1.candidate?.official_url||portal2.candidate?.official_url||null;
+  merged.notification_url=portal1.candidate?.notification_url||portal2.candidate?.notification_url||null;
+  merged.apply_url=portal1.candidate?.apply_url||portal2.candidate?.apply_url||null;
+  const finalUrlProblems=[];
+  for(const field of ['official_url','notification_url','apply_url']){const value=merged[field];if(!value)finalUrlProblems.push({field,reason:'missing'});else if(isPortalOwnedUrl(value,portal))finalUrlProblems.push({field,reason:'secondary_domain_url'});else if(urlHasTrackingSignal(value))finalUrlProblems.push({field,reason:'tracking_or_redirect_signal'});}
+  if(finalUrlProblems.length){stats.verificationRequired++;await notify(db,'portal_url_review','Admin verification required: URL problem',candidate.title+': final URL validation failed.',null);await recordEvent(db,{sourceId:portal.id,eventType:'portal_url_validation_failed',severity:'warning',message:'Portal URL validation failed: '+candidate.title,evidence:{problems:finalUrlProblems}});return;}
+  const google=await googleCrossCheck(env,merged);
+  const coverage=portalGoogleFieldCoverage(merged,google);
+  if(google.status!=='confirmed'||google.verified!==true||!coverage.sufficient){stats.verificationRequired++;await notify(db,'portal_verification','Admin verification required: Google cross-check failed',candidate.title+': Google cross-check was '+google.status+'; automatic publishing is blocked.',null);await recordEvent(db,{sourceId:portal.id,eventType:'google_crosscheck_failed',severity:'warning',message:'Google cross-check failed: '+candidate.title,evidence:{google,coverage,comparison}});return;}
+  await publishPortalVerifiedCandidate(db,merged,{source_id:portal.id,portals:[portal1.portal_name,portal2.portal_name],comparison},{...google,field_coverage:coverage},now,stats);
+}
 /* -------------------------------------------------------------------------- */
 /* Portal source selection                                                    */
 /* -------------------------------------------------------------------------- */
@@ -1668,10 +1601,9 @@ async function getPortalSources(
     Portal 1 = Sarkari Result
     Portal 2 = FreeJobAlert
 
-    These are secondary evidence only. They can never become
-    the authority for publishing a recruitment. Official
-    organization + official notification/apply evidence remains
-    the final authority.
+    These are secondary discovery/evidence sources only.
+    Branch B does not call the official-source verification branch.
+    Google is the third cross-check. Any unresolved issue goes to Admin.
   */
   const result =
     await db
@@ -1761,7 +1693,7 @@ async function ensureFixedPortalSources(db) {
       'https://www.freejobalert.com/',
       'freejobalert.com',
       'generic',
-      1,
+      0,
       91
     )
     ON CONFLICT(name) DO UPDATE SET
@@ -2962,17 +2894,11 @@ async function runOfficial(
           );
         }
 
-        await portalFallbackForCandidate(
-          db,
-          current,
-          candidate,
-          verification,
-          existing || await findExistingItem(db, candidate, candidateKey(candidate)),
-          now,
-          stats
-        );
-
-        /* Do not publish incomplete recruitment automatically. */
+        /*
+          Branches are independent.
+          Official-source candidates do NOT enter Portal 1/2.
+          Incomplete official candidates remain Admin verification.
+        */
         continue;
       }
 
@@ -3115,21 +3041,10 @@ async function runOfficial(
     );
 
     /*
-      After the official source has exhausted
-      its daily retry budget, check Portal 1/2
-      for existing records.
+      Official-source failure stays inside Branch A.
+      Branch B has its own independent daily scan and
+      must never be invoked as an official-source fallback.
     */
-    if (
-      failure.count >=
-      RETRY_LIMIT
-    ) {
-      await runPortalsForFallback(
-        db,
-        current,
-        now,
-        stats
-      );
-    }
   }
 }
 
