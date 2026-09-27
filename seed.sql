@@ -28,9 +28,14 @@ INSERT OR IGNORE INTO sources(name,role,fallback_key,base_url,allowed_domains,ad
 ('India Post','official','indiapost','https://www.indiapost.gov.in/','indiapost.gov.in','generic',30),
 ('Defence Jobs','official','defence','https://www.mod.gov.in/','mod.gov.in','generic',40);
 
--- Portal slots are intentionally configurable. Replace these URLs from Admin > Sources.
-INSERT OR IGNORE INTO sources(name,role,fallback_key,base_url,allowed_domains,adapter,priority) VALUES
-('Portal 1','portal','*','https://portal-1.example/','portal-1.example','generic',90),
-('Portal 2','portal','*','https://portal-2.example/','portal-2.example','generic',91);
+-- Fixed secondary verification portals.
+-- Portal 1 = Sarkari Result
+-- Portal 2 = FreeJobAlert
+INSERT OR IGNORE INTO sources(name,role,fallback_key,base_url,allowed_domains,adapter,enabled,priority) VALUES
+('Sarkari Result (Portal 1)','portal','*','https://www.sarkariresult.com/','sarkariresult.com','generic',1,90),
+('FreeJobAlert (Portal 2)','portal','*','https://www.freejobalert.com/','freejobalert.com','generic',1,91);
 
-UPDATE sources SET enabled=0 WHERE role='portal';
+UPDATE sources
+SET enabled=0
+WHERE role='portal'
+  AND name NOT IN ('Sarkari Result (Portal 1)','FreeJobAlert (Portal 2)');
