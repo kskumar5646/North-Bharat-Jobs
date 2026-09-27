@@ -239,15 +239,18 @@ function robotsAllowed(url, policy) {
 }
 
 function sanitizePortalCandidate(candidate) {
-  // Only short factual metadata may be used as secondary evidence. Do not
-  // republish portal-authored prose, instructions, images, logos, or branding.
+  /*
+    Keep structured factual metadata for Portal 1/Portal 2 comparison:
+    title, organization, vacancy, qualification, eligibility, age, fee,
+    dates, selection and salary.
+
+    Do NOT republish portal-authored article prose, instructions, images,
+    logos or branding. Branch B may use these structured facts internally
+    as evidence and only after all gates pass.
+  */
   return {
     ...candidate,
     description: null,
-    eligibility: null,
-    qualification: null,
-    selection_process: null,
-    salary: null,
     how_to_apply: null,
     important_dates: null,
     authority: 'secondary',
