@@ -26,6 +26,32 @@ const jsonHeaders = {
   'cache-control': 'no-store'
 };
 
+
+function hasPublicUrlTracking(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  try {
+    const u = new URL(raw);
+    const keys = [...u.searchParams.keys()].map(k => k.toLowerCase());
+    if (keys.some(k => /^(utm_|gclid|dclid|fbclid|msclkid|mc_cid|mc_eid|yclid|_hs[a-z_]*|ref|referrer|campaign|tracking)/i.test(k))) return true;
+    return /(?:^|[/?=&_-])(redirect|redir|track|tracking|click|out|target|dest|destination)(?:[/?=&_-]|$)/i.test(u.pathname + u.search);
+  } catch {
+    return true;
+  }
+}
+
+function publicSafeUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw || hasPublicUrlTracking(raw)) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
 function json(data, status = 200) {
   return new Response(
     JSON.stringify(data),
@@ -492,6 +518,9 @@ async function publicItem(
     );
   }
 
+  item.official_url = publicSafeUrl(item.official_url);
+  item.notification_url = publicSafeUrl(item.notification_url);
+  item.apply_url = publicSafeUrl(item.apply_url);
   return json({
     ok: true,
     item
@@ -819,6 +848,12 @@ async function adminApi(
 
     if (!existing) {
       return json({ ok:false, error:'Item not found' }, 404);
+    }
+
+    const publishUrlProblems = ['official_url','notification_url','apply_url']
+      .filter(field => existing[field] && hasPublicUrlTracking(existing[field]));
+    if (publishUrlProblems.length) {
+      return json({ ok:false, error:'Cannot publish tracking/redirect URL. Correct these fields first: '+publishUrlProblems.join(', ') }, 400);
     }
 
     const result =
@@ -1875,21 +1910,25 @@ async function publicItemPage(
 
   const actions = [];
 
-  if (item.official_url) {
+  const publicOfficialUrl = publicSafeUrl(item.official_url);
+  const publicNotificationUrl = publicSafeUrl(item.notification_url);
+  const publicApplyUrl = publicSafeUrl(item.apply_url);
+
+  if (publicOfficialUrl) {
     actions.push(
-      `<a href="${esc(item.official_url)}" target="_blank" rel="noopener noreferrer">Official Website</a>`
+      `<a href="${esc(publicOfficialUrl)}" target="_blank" rel="noopener noreferrer">Official Website</a>`
     );
   }
 
-  if (item.notification_url) {
+  if (publicNotificationUrl) {
     actions.push(
-      `<a href="${esc(item.notification_url)}" target="_blank" rel="noopener noreferrer">Notification PDF</a>`
+      `<a href="${esc(publicNotificationUrl)}" target="_blank" rel="noopener noreferrer">Notification PDF</a>`
     );
   }
 
-  if (item.apply_url) {
+  if (publicApplyUrl) {
     actions.push(
-      `<a href="${esc(item.apply_url)}" target="_blank" rel="noopener noreferrer">Apply Online</a>`
+      `<a href="${esc(publicApplyUrl)}" target="_blank" rel="noopener noreferrer">Apply Online</a>`
     );
   }
 
