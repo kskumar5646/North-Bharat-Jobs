@@ -1856,15 +1856,11 @@ async function handleLogin(
     )
     .run();
 
-  const headers = {
-    ...jsonHeaders,
-    'set-cookie':
-      cookieHeader(
-        token,
-        SESSION_DAYS *
-          86_400
-      )
-  };
+  const sessionCookie = cookieHeader(
+    token,
+    SESSION_DAYS *
+      86_400
+  );
 
   if (
     contentType.includes(
@@ -1876,18 +1872,25 @@ async function handleLogin(
         ok: true
       }),
       {
-        headers
+        headers: {
+          ...jsonHeaders,
+          'set-cookie': sessionCookie
+        }
       }
     );
   }
 
-  return Response.redirect(
-    new URL(
-      '/admin/',
-      request.url
-    ),
-    303
-  );
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: new URL(
+        '/admin/',
+        request.url
+      ).toString(),
+      'set-cookie': sessionCookie,
+      'cache-control': 'no-store'
+    }
+  });
 }
 
 /*
