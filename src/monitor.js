@@ -1622,7 +1622,14 @@ async function portalFallbackForCandidate(
     portal_agreement:
       portalAgreement,
 
+    verification_stage:
+      'secondary_only',
+
+    publishable_from_portal:
+      false,
+
     recovered,
+
 
     still_missing:
       recoveredMissing
@@ -1656,17 +1663,11 @@ async function portalFallbackForCandidate(
       const [field, value]
       of Object.entries(recovered)
     ) {
-      if (
-        !hasUsableUrl(value)
-      ) {
+      if (value === null || value === undefined || String(value).trim() === '') {
         continue;
       }
 
-      if (
-        hasUsableUrl(
-          target[field]
-        )
-      ) {
+      if (target[field] !== null && target[field] !== undefined && String(target[field]).trim() !== '') {
         continue;
       }
 
