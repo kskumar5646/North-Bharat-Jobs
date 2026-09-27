@@ -1490,7 +1490,7 @@ function normalizePublicUrl(value) {
   }
 }
 
-async async function inspectUrlChain(value, field) {
+async function inspectUrlChain(value, field) {
   const problems = [];
   let current = normalizePublicUrl(value);
   if (!current) return {clean:false,url:null,problems:[{field,reason:'INVALID_URL'}]};
@@ -1796,7 +1796,7 @@ function portalGoogleFieldCoverage(candidate, google) {
   return {checked,confirmed,sufficient:checked.length===0 || confirmed>=Math.max(1,Math.ceil(checked.length*0.5))};
 }
 
-async async async function publishPortalVerifiedCandidate(db,candidate,portalEvidence,google,now,stats) {
+async function publishPortalVerifiedCandidate(db,candidate,portalEvidence,google,now,stats) {
   const key=candidateKey(candidate);
   if(!key) return {published:false,reason:'missing_identity'};
   const firewall=publicContentFirewall(candidate);
@@ -1880,7 +1880,7 @@ async async async function publishPortalVerifiedCandidate(db,candidate,portalEvi
   return {published:true,id};
 }
 
-async async async function queuePortalCandidateForVerification(db,env,candidate,portal,now,stats) {
+async function queuePortalCandidateForVerification(db,env,candidate,portal,now,stats) {
   const key=candidateKey(candidate);
   if(!key){stats.verificationRequired++;return;}
   const identity=await sha256Hex(portalSecondaryIdentity(candidate));
@@ -2009,7 +2009,7 @@ async async async function queuePortalCandidateForVerification(db,env,candidate,
 /* Portal source selection                                                    */
 /* -------------------------------------------------------------------------- */
 
-async async function getPortalSources(
+async function getPortalSources(
   db,
   official
 ) {
@@ -2059,7 +2059,7 @@ async async function getPortalSources(
 /* Fixed portal configuration                                                 */
 /* -------------------------------------------------------------------------- */
 
-async async function ensureFixedPortalSources(db) {
+async function ensureFixedPortalSources(db) {
   /*
     Make the two secondary sources deterministic on every monitor run.
     This also repairs the old placeholder Portal 1/Portal 2 rows without
