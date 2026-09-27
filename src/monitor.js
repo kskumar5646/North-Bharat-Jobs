@@ -24,7 +24,8 @@
 
 import {
   discoverFromSource,
-  discoverPortal
+  discoverPortal,
+  discoverPortalNewOnly
 } from './sources.js';
 
 import {
@@ -52,6 +53,10 @@ const CANDIDATE_LIMIT = 8;
 const PORTAL_LIMIT = 2;
 
 const RETENTION_DELETE_BATCH = 100;
+const PORTAL_SCAN_DAYS = 1;
+const PORTAL_SEEN_URL_LIMIT = 2000;
+const PORTAL_NEW_CANDIDATE_LIMIT = 8;
+
 
 
 /* -------------------------------------------------------------------------- */
@@ -1187,6 +1192,388 @@ async function upsertOfficial(
   };
 }
 
+
+
+/* -------------------------------------------------------------------------- */
+/* Portal new-only scan state                                                 */
+/* -------------------------------------------------------------------------- */
+
+function portalStateKey(source) {
+  return `portal_scan:${Number(source.id)}`;
+}
+
+async function readPortalScanState(db, source) {
+  const key = portalStateKey(source);
+
+  const row = await db.prepare(`
+    SELECT value
+    FROM settings
+    WHERE key=?
+    LIMIT 1
+  `).bind(key).first();
+
+  if (!row?.value) {
+    return {
+      lastScanAt: null,
+      seenUrls: []
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(row.value);
+    return {
+      lastScanAt: parsed?.lastScanAt || null,
+      seenUrls: Array.isArray(parsed?.seenUrls)
+        ? parsed.seenUrls.slice(-PORTAL_SEEN_URL_LIMIT)
+        : []
+    };
+  } catch {
+    return {
+      lastScanAt: null,
+      seenUrls: []
+    };
+  }
+}
+
+async function writePortalScanState(db, source, state) {
+  const key = portalStateKey(source);
+  const value = safeJson({
+    lastScanAt: state.lastScanAt || null,
+    seenUrls: Array.from(
+      new Set(
+        (state.seenUrls || [])
+          .map(value => String(value || '').trim())
+          .filter(Boolean)
+      )
+    ).slice(-PORTAL_SEEN_URL_LIMIT)
+  });
+
+  await db.prepare(`
+    INSERT INTO settings(key, value)
+    VALUES(?,?)
+    ON CONFLICT(key) DO UPDATE SET
+      value=excluded.value,
+      updated_at=CURRENT_TIMESTAMP
+  `).bind(key, value).run();
+}
+
+function portalScanDue(state, now) {
+  if (!state?.lastScanAt) return true;
+
+  const last = new Date(state.lastScanAt);
+  if (Number.isNaN(last.getTime())) return true;
+
+  return (
+    now.getTime() - last.getTime()
+    >= PORTAL_SCAN_DAYS * 86_400_000
+  );
+}
+
+async function runIndependentPortalScan(
+  db,
+  portal,
+  now,
+  stats
+) {
+  const state =
+    await readPortalScanState(
+      db,
+      portal
+    );
+
+  if (!portalScanDue(state, now)) {
+    return {
+      skipped: true,
+      discovered: 0
+    };
+  }
+
+  try {
+    const candidates =
+      await discoverPortalNewOnly(
+        portal,
+        state.seenUrls
+      );
+
+    const newCandidates =
+      (candidates || [])
+        .filter(candidate =>
+          candidate?._portal_new_discovery === true
+        )
+        .slice(
+          0,
+          PORTAL_NEW_CANDIDATE_LIMIT
+        );
+
+    /*
+      Mark URLs seen only after discovery has returned.
+      This prevents a failed fetch from permanently consuming
+      a URL before it was actually inspected.
+    */
+    const discoveredUrls =
+      [];
+
+    for (const candidate of newCandidates) {
+      for (const field of [
+        'source_url',
+        'canonical_url',
+        'notification_url'
+      ]) {
+        const value =
+          normalizePortalStateUrl(
+            candidate?.[field]
+          );
+
+        if (value) {
+          discoveredUrls.push(value);
+        }
+      }
+    }
+
+    const nextState = {
+      lastScanAt: iso(now),
+      seenUrls: [
+        ...(state.seenUrls || []),
+        ...discoveredUrls
+      ]
+    };
+
+    await writePortalScanState(
+      db,
+      portal,
+      nextState
+    );
+
+    /*
+      Portal discovery is secondary only.
+      We do not insert/publish from this scan.
+      Each candidate is passed to the dedicated
+      verification queue for Google + official checks.
+    */
+    for (const candidate of newCandidates) {
+      stats.discovered++;
+
+      await queuePortalCandidateForVerification(
+        db,
+        candidate,
+        portal,
+        now,
+        stats
+      );
+    }
+
+    await sourceSuccess(
+      db,
+      portal,
+      now
+    );
+
+    return {
+      skipped: false,
+      discovered: newCandidates.length
+    };
+  } catch (error) {
+    stats.errors++;
+
+    await sourceFailure(
+      db,
+      portal,
+      error,
+      now
+    );
+
+    await recordEvent(
+      db,
+      {
+        sourceId: portal.id,
+        eventType: 'portal_scan_error',
+        severity: 'warning',
+        message:
+          `${portal.name}: ${error?.message || error}`
+      }
+    );
+
+    return {
+      skipped: false,
+      discovered: 0,
+      error: true
+    };
+  }
+}
+
+function normalizePortalStateUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw);
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
+/*
+  Portal candidates enter a verification_required record.
+  No portal candidate can become published merely because
+  a portal found it.
+*/
+async function queuePortalCandidateForVerification(
+  db,
+  candidate,
+  portal,
+  now,
+  stats
+) {
+  const key =
+    candidateKey(candidate);
+
+  if (!key) {
+    return;
+  }
+
+  const existing =
+    await findExistingItem(
+      db,
+      candidate,
+      key
+    );
+
+  if (existing) {
+    await recordEvent(
+      db,
+      {
+        itemId: existing.id,
+        sourceId: portal.id,
+        eventType: 'portal_new_discovery_existing_item',
+        severity: 'info',
+        message:
+          `Portal discovered an existing recruitment: ${candidate.title}`
+      }
+    );
+    return;
+  }
+
+  const slug =
+    `${slugify(candidate.title || 'job')}-${(
+      await sha256Hex(key)
+    ).slice(0, 8)}`;
+
+  await db.prepare(`
+    INSERT OR IGNORE INTO items(
+      slug,
+      notification_key,
+      type,
+      title,
+      organization,
+      category,
+      location,
+      description,
+      eligibility,
+      qualification,
+      vacancies,
+      age_limit,
+      age_relaxation,
+      fee,
+      selection_process,
+      salary,
+      application_start,
+      last_date,
+      exam_date,
+      how_to_apply,
+      important_dates,
+      official_url,
+      apply_url,
+      notification_url,
+      source_url,
+      source_name,
+      source_id,
+      canonical_url,
+      status,
+      verification_status,
+      confidence_score,
+      evidence_json,
+      last_seen_at
+    )
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).bind(
+    slug,
+    key,
+    candidate.type || 'job',
+    candidate.title || null,
+    candidate.organization || null,
+    candidate.category || 'job',
+    candidate.location || null,
+    null,
+    candidate.eligibility || null,
+    candidate.qualification || null,
+    candidate.vacancies || null,
+    candidate.age_limit || null,
+    candidate.age_relaxation || null,
+    candidate.fee || null,
+    candidate.selection_process || null,
+    candidate.salary || null,
+    candidate.application_start || null,
+    candidate.last_date || null,
+    candidate.exam_date || null,
+    null,
+    null,
+    null,
+    null,
+    candidate.notification_url || null,
+    candidate.source_url || null,
+    portal.name,
+    portal.id,
+    candidate.canonical_url || candidate.source_url || null,
+    'verification_required',
+    'secondary_pending',
+    0,
+    safeJson({
+      authority: 'secondary_only',
+      verification_stage: 'secondary_evidence',
+      publishable_from_portal: false,
+      portal_source_id: portal.id,
+      portal_discovery: true
+    }),
+    iso(now)
+  ).run();
+
+  const created =
+    await db.prepare(`
+      SELECT id
+      FROM items
+      WHERE notification_key=?
+      LIMIT 1
+    `).bind(key).first();
+
+  await notify(
+    db,
+    'portal_verification',
+    'Portal discovery requires verification',
+    `${candidate.title}: secondary evidence discovered; Google cross-check and official-source verification are required before publish.`,
+    created?.id || null
+  );
+
+  await recordEvent(
+    db,
+    {
+      itemId: created?.id || null,
+      sourceId: portal.id,
+      eventType: 'portal_new_discovery',
+      severity: 'warning',
+      message:
+        `New portal discovery queued for verification: ${candidate.title}`,
+      evidence: {
+        authority: 'secondary_only',
+        verification_stage: 'secondary_evidence',
+        publishable_from_portal: false
+      }
+    }
+  );
+
+  stats.verificationRequired++;
+}
 
 /* -------------------------------------------------------------------------- */
 /* Portal source selection                                                    */
@@ -2709,6 +3096,30 @@ export async function runMonitor(
         db,
         started
       );
+  }
+
+
+  /*
+    Independent daily Portal 1/Portal 2 discovery.
+    This branch is deliberately separate from the official-source
+    rotation. It never publishes directly.
+  */
+  if (
+    !requestedSource &&
+    options?.skipPortals !== true
+  ) {
+    const portals =
+      await getPortalSources(db, null);
+
+    for (const portal of portals) {
+      stats.sources++;
+      await runIndependentPortalScan(
+        db,
+        portal,
+        new Date(),
+        stats
+      );
+    }
   }
 
   let sources;
