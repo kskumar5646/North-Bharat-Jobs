@@ -462,7 +462,14 @@ async function publicItem(
   const item =
     await env.DB
       .prepare(`
-        SELECT *
+        SELECT
+          id, slug, type, title, organization, category, location,
+          description, eligibility, qualification, vacancies, age_limit,
+          age_relaxation, fee, selection_process, salary,
+          application_start, last_date, exam_date, how_to_apply,
+          important_dates, official_url, apply_url, notification_url,
+          canonical_url, published_at, created_at, updated_at
+        
         FROM items
         WHERE
           slug=?
@@ -987,7 +994,14 @@ async function adminApi(
       return json({ ok:false, error:'Item not found' }, 404);
     }
 
-    const result = await runMonitor(env, item.source_name, { maintenance:false });
+    let monitorSource = item.source_name;
+    if (String(item.source_name || '') === 'Secondary Cross-check' || !String(item.source_name || '').trim()) {
+      const sourceRow = await env.DB.prepare('SELECT name FROM sources WHERE id=? LIMIT 1').bind(item.source_id).first();
+      monitorSource = sourceRow?.name || null;
+    }
+    const result = monitorSource
+      ? await runMonitor(env, monitorSource, { maintenance:false })
+      : await runMonitor(env, null, { maintenance:false })
 
     await audit(env, admin.id, 'reverify_item', 'item', id, {
       source_name: item.source_name
