@@ -1448,10 +1448,123 @@ function urlHasTrackingSignal(value) {
   if (!raw) return false;
   try {
     const url = new URL(raw);
-    const params = ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','fbclid','gclid','msclkid','mc_cid','mc_eid'];
-    if (params.some(name => url.searchParams.has(name))) return true;
-    return /(?:redirect|redir|track|tracking|click|out\\b|go\\b|url=|target=|dest=|destination=)/i.test(url.pathname + url.search);
-  } catch { return /(?:redirect|redir|track|tracking|click|url=|target=|dest=)/i.test(raw); }
+    const host = url.hostname.toLowerCase().replace(/^www\\./,'');
+    const keys = [...url.searchParams.keys()].map(k => k.toLowerCase());
+    const trackingKeys = new Set([
+      'utm_source','utm_medium','utm_campaign','utm_term','utm_content',
+      'gclid','dclid','fbclid','msclkid','mc_cid','mc_eid','yclid',
+      'ref','referrer','affiliate','aff','affiliate_id','clickid','click_id',
+      'campaign','tracking','track','source'
+    ]);
+    if (keys.some(k => trackingKeys.has(k) || /^(utm_|tracking_|affiliate_|click_)/i.test(k))) return true;
+    if (/^(?:bit\\.ly|tinyurl\\.com|t\\.co|goo\\.gl|is\\.gd|ow\\.ly|buff\\.ly|cutt\\.ly|rb\\.gy|rebrand\\.ly|lnkd\\.in)$/.test(host)) return true;
+    return /(?:^|[\\/_.-])(redirect|redir|track|tracking|click|affiliate|referral|out)(?:[\\/_.?&=-]|$)/i.test(url.pathname + url.search)
+      || /(?:^|[?&])(url|target|dest|destination|redirect|redirect_url|return|return_url|continue)=/i.test(url.search);
+  } catch {
+    return true;
+  }
+}
+
+function isUnsafeNetworkHost(value) {
+  try {
+    const host = new URL(String(value)).hostname.toLowerCase().replace(/^\\[|\\]$/g,'');
+    if (!host) return true;
+    if (host === 'localhost' || host.endsWith('.localhost') || host === 'metadata.google.internal') return true;
+    if (/^(?:0|127\\.|10\\.|169\\.254\\.|192\\.168\\.|172\\.(?:1[6-9]|2\\d|3[0-1])\\.)/.test(host)) return true;
+    if (/^(?:::1|fc|fd|fe80)/i.test(host)) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function normalizePublicUrl(value) {
+  try {
+    const u = new URL(String(value || '').trim());
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    if (isUnsafeNetworkHost(u.href)) return null;
+    u.hash = '';
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function inspectUrlChain(value, field) {
+  const problems = [];
+  let current = normalizePublicUrl(value);
+  if (!current) return {clean:false,url:null,problems:[{field,reason:'INVALID_URL'}]};
+  const visited = new Set();
+  const chain = [];
+
+  for (let hop=0; hop<5; hop++) {
+    if (visited.has(current)) {
+      problems.push({field,reason:'REDIRECT_LOOP'});
+      return {clean:false,url:null,chain,problems};
+    }
+    visited.add(current);
+    if (urlHasTrackingSignal(current)) {
+      problems.push({field,reason:'TRACKING_URL'});
+      return {clean:false,url:null,chain,problems};
+    }
+    chain.push(current);
+
+    let response;
+    try {
+      response = await fetch(current, {method:'HEAD',redirect:'manual',headers:{accept:'*/*'}});
+      if (response.status === 405 || response.status === 501) {
+        response = await fetch(current, {method:'GET',redirect:'manual',headers:{accept:'*/*'}});
+      }
+    } catch (error) {
+      problems.push({field,reason:'DESTINATION_UNREACHABLE'});
+      return {clean:false,url:null,chain,problems};
+    }
+
+    if (response.status >= 300 && response.status < 400) {
+      const location=response.headers.get('location');
+      if(!location){problems.push({field,reason:'REDIRECT_WITHOUT_LOCATION'});return {clean:false,url:null,chain,problems};}
+      const next=normalizePublicUrl(new URL(location,current).href);
+      if(!next){problems.push({field,reason:'REDIRECT_TO_UNSAFE_URL'});return {clean:false,url:null,chain,problems};}
+      current=next;
+      continue;
+    }
+
+    if (response.status < 200 || response.status >= 400) {
+      problems.push({field,reason:'DESTINATION_HTTP_ERROR',status:response.status});
+      return {clean:false,url:null,chain,problems};
+    }
+
+    const final=normalizePublicUrl(current);
+    const contentType=(response.headers.get('content-type')||'').toLowerCase();
+    if(!final || urlHasTrackingSignal(final)){problems.push({field,reason:'TRACKING_URL'});return {clean:false,url:null,chain,problems};}
+    if(field==='notification_url' && contentType && !/(pdf|octet-stream)/i.test(contentType) && !/\\.pdf(?:$|[?#])/i.test(new URL(final).pathname)){
+      problems.push({field,reason:'INVALID_NOTIFICATION_URL',content_type:contentType});
+      return {clean:false,url:null,chain,problems};
+    }
+    if(field==='apply_url' && /(application\\/pdf|text\\/pdf)/i.test(contentType)){
+      problems.push({field,reason:'INVALID_APPLY_URL'});
+      return {clean:false,url:null,chain,problems};
+    }
+    return {clean:true,url:final,chain,problems};
+  }
+  problems.push({field,reason:'REDIRECT_CHAIN_TOO_LONG'});
+  return {clean:false,url:null,chain,problems};
+}
+
+function publicContentFirewall(candidate) {
+  const blocked=[
+    /sarkari\\s*result/i,/employment\\s*news/i,/rojgar\\s*samachar/i,/\\bncs\\b/i,
+    /sarkariresult\\.com/i,/employmentnews\\.gov\\.in/i,/ncs\\.gov\\.in/i
+  ];
+  const fields=['title','organization','category','location','description','eligibility','qualification',
+    'vacancies','age_limit','age_relaxation','fee','selection_process','salary','application_start',
+    'last_date','exam_date','how_to_apply','important_dates','official_url','notification_url','apply_url','canonical_url'];
+  const hits=[];
+  for(const field of fields){
+    const value=String(candidate?.[field]??'');
+    if(blocked.some(pattern=>pattern.test(value))) hits.push({field,reason:'PROHIBITED_PORTAL_REFERENCE'});
+  }
+  return {clean:hits.length===0,hits};
 }
 
 function isPortalOwnedUrl(value, source) {
@@ -1463,14 +1576,15 @@ function isPortalOwnedUrl(value, source) {
 }
 
 function portalUrlReview(candidate, source) {
-  const problems = [];
-  for (const field of ['official_url','notification_url','apply_url']) {
-    const value = candidate?.[field];
-    if (!value) continue;
-    if (isPortalOwnedUrl(value, source)) problems.push({field, reason:'secondary_domain_url'});
-    if (urlHasTrackingSignal(value)) problems.push({field, reason:'tracking_or_redirect_signal'});
+  const problems=[];
+  for(const field of ['official_url','notification_url','apply_url']){
+    const value=candidate?.[field];
+    if(!value){problems.push({field,reason:'MISSING_URL'});continue;}
+    if(isPortalOwnedUrl(value,source)) problems.push({field,reason:'NON_OFFICIAL_URL'});
+    if(urlHasTrackingSignal(value)) problems.push({field,reason:'TRACKING_URL'});
+    if(!normalizePublicUrl(value)) problems.push({field,reason:'INVALID_URL'});
   }
-  return {clean: problems.length === 0, problems};
+  return {clean:problems.length===0,problems};
 }
 
 async function googleCrossCheck(env, candidate) {
@@ -1580,74 +1694,33 @@ function portalImportantFields() {
   ];
 }
 
-function comparePortalCandidates(a, b) {
-  const matches = [];
-  const mismatches = [];
-
-  for (const field of portalImportantFields()) {
-    const av = normalizeComparable(a?.[field]);
-    const bv = normalizeComparable(b?.[field]);
-
-    // Both absent: the required-data gate handles it later.
-    // One present and one absent is a real portal mismatch.
-    if (!av && !bv) continue;
-
-    if (av === bv) {
-      matches.push(field);
-    } else {
-      mismatches.push({
-        field,
-        portal1: a?.[field] ?? null,
-        portal2: b?.[field] ?? null
-      });
-    }
+function comparePortalCandidates(a,b) {
+  const matches=[]; const mismatches=[];
+  for(const field of portalImportantFields()){
+    const av=normalizeComparable(a?.[field]);
+    const bv=normalizeComparable(b?.[field]);
+    if(!av && !bv) continue;
+    if(av===bv) matches.push(field);
+    else mismatches.push({field,portal1:a?.[field]??null,portal2:b?.[field]??null});
   }
-
-  for (const field of ['official_url','notification_url','apply_url']) {
-    const av = normalizeComparable(a?.[field]);
-    const bv = normalizeComparable(b?.[field]);
-    if (av && bv && av !== bv) {
-      mismatches.push({
-        field,
-        portal1: a?.[field] ?? null,
-        portal2: b?.[field] ?? null
-      });
-    } else if (av && bv) {
-      matches.push(field);
-    }
-  }
-
-  const identityMatch =
-    titleSimilarity(a?.title,b?.title) &&
-    (!a?.organization || !b?.organization ||
-      titleSimilarity(a?.organization,b?.organization));
-
-  return {
-    identityMatch,
-    matches,
-    mismatches,
-    agreement:
-      identityMatch &&
-      mismatches.length === 0 &&
-      matches.length >= 1
-  };
+  const identityMatch=titleSimilarity(a?.title,b?.title) &&
+    (!a?.organization || !b?.organization || titleSimilarity(a?.organization,b?.organization));
+  return {identityMatch,matches,mismatches,agreement:identityMatch&&mismatches.length===0&&matches.length>=1};
 }
 
 function portalCandidateForPublicData(candidate) {
-  const c = {...(candidate || {})};
-
-  // Keep only structured, non-article values for public display.
-  c.description = null;
-  c.how_to_apply = String(c.apply_url || '').trim()
-    ? 'Apply through the official application link.'
-    : null;
-
-  const dates = [];
-  if (c.application_start) dates.push('Application Start: ' + c.application_start);
-  if (c.last_date) dates.push('Last Date: ' + c.last_date);
-  if (c.exam_date) dates.push('Exam Date: ' + c.exam_date);
-  c.important_dates = dates.length ? dates.join(' | ') : null;
-
+  const allowed=['type','title','organization','category','location','eligibility','qualification','vacancies',
+    'age_limit','age_relaxation','fee','selection_process','salary','application_start','last_date','exam_date',
+    'official_url','apply_url','notification_url','canonical_url'];
+  const c={};
+  for(const field of allowed) c[field]=candidate?.[field]??null;
+  c.description=null;
+  c.how_to_apply=String(c.apply_url||'').trim()?'Apply through the official application link.':null;
+  const dates=[];
+  if(c.application_start) dates.push('Application Start: '+c.application_start);
+  if(c.last_date) dates.push('Last Date: '+c.last_date);
+  if(c.exam_date) dates.push('Exam Date: '+c.exam_date);
+  c.important_dates=dates.length?dates.join(' | '):null;
   return c;
 }
 
@@ -1715,266 +1788,211 @@ function portalGoogleFieldCoverage(candidate, google) {
   return {checked,confirmed,sufficient:checked.length===0 || confirmed>=Math.max(1,Math.ceil(checked.length*0.5))};
 }
 
-async function publishPortalVerifiedCandidate(db,candidate,portalEvidence,google,now,stats) {
-  const key=candidateKey(candidate); if(!key) return {published:false,reason:'missing_identity'};
-  let existing=await findExistingItem(db,candidate,key);
+async async function publishPortalVerifiedCandidate(db,candidate,portalEvidence,google,now,stats) {
+  const key=candidateKey(candidate);
+  if(!key) return {published:false,reason:'missing_identity'};
+  const firewall=publicContentFirewall(candidate);
+  if(!firewall.clean) return {published:false,reason:'PUBLIC_FIREWALL_FAILED',hits:firewall.hits};
 
-  /*
-    Cross-source identity fallback:
-    Portal notification keys can differ from official-source keys.
-    Only merge when the organization/title match AND at least one
-    stable identity signal agrees (notification/apply/canonical URL
-    or the same application window). This avoids merging genuinely
-    new editions such as NDA I vs NDA II.
-  */
+  let existing=await findExistingItem(db,candidate,key);
   if(!existing && candidate?.organization && candidate?.title){
     const rows=await db.prepare(`
       SELECT * FROM items
-      WHERE organization=?
-        AND COALESCE(status,'')!='archived'
-      ORDER BY updated_at DESC
-      LIMIT 25
+      WHERE organization=? AND COALESCE(status,'')!='archived'
+      ORDER BY updated_at DESC LIMIT 25
     `).bind(candidate.organization).all();
-
     for(const row of (rows.results||[])){
       if(!titleSimilarity(row.title,candidate.title)) continue;
-
-      const sameNotificationUrl =
-        sameMonitorUrl(row.notification_url,candidate.notification_url);
-      const sameApplyUrl =
-        sameMonitorUrl(row.apply_url,candidate.apply_url);
-      const sameCanonical =
-        sameMonitorUrl(row.canonical_url,candidate.canonical_url);
-      const sameWindow =
-        normalizeComparable(row.application_start) &&
-        normalizeComparable(candidate.application_start) &&
-        normalizeComparable(row.last_date) &&
-        normalizeComparable(candidate.last_date) &&
-        normalizeComparable(row.application_start)===normalizeComparable(candidate.application_start) &&
+      const sameNotificationUrl=sameMonitorUrl(row.notification_url,candidate.notification_url);
+      const sameApplyUrl=sameMonitorUrl(row.apply_url,candidate.apply_url);
+      const sameCanonical=sameMonitorUrl(row.canonical_url,candidate.canonical_url);
+      const sameWindow=normalizeComparable(row.application_start)&&normalizeComparable(candidate.application_start)&&
+        normalizeComparable(row.last_date)&&normalizeComparable(candidate.last_date)&&
+        normalizeComparable(row.application_start)===normalizeComparable(candidate.application_start)&&
         normalizeComparable(row.last_date)===normalizeComparable(candidate.last_date);
-
-      if(sameNotificationUrl || sameApplyUrl || sameCanonical || sameWindow){
-        existing=row;
-        break;
-      }
+      if(sameNotificationUrl||sameApplyUrl||sameCanonical||sameWindow){existing=row;break;}
     }
   }
 
-  if(existing) {
-    const cleanExisting = portalCandidateForPublicData(candidate);
-    const updates = {
-      title: cleanExisting.title || existing.title,
-      organization: cleanExisting.organization || existing.organization,
-      category: cleanExisting.category || existing.category,
-      location: cleanExisting.location || existing.location,
-      eligibility: cleanExisting.eligibility || existing.eligibility,
-      qualification: cleanExisting.qualification || existing.qualification,
-      vacancies: cleanExisting.vacancies || existing.vacancies,
-      age_limit: cleanExisting.age_limit || existing.age_limit,
-      age_relaxation: cleanExisting.age_relaxation || existing.age_relaxation,
-      fee: cleanExisting.fee || existing.fee,
-      selection_process: cleanExisting.selection_process || existing.selection_process,
-      salary: cleanExisting.salary || existing.salary,
-      application_start: cleanExisting.application_start || existing.application_start,
-      last_date: cleanExisting.last_date || existing.last_date,
-      exam_date: cleanExisting.exam_date || existing.exam_date,
-      official_url: cleanExisting.official_url || existing.official_url,
-      apply_url: cleanExisting.apply_url || existing.apply_url,
-      notification_url: cleanExisting.notification_url || existing.notification_url,
-      canonical_url: cleanExisting.canonical_url || existing.canonical_url,
-      source_hash: await sha256Hex(JSON.stringify(cleanExisting)),
-      last_seen_at: iso(now),
-      last_verified_at: iso(now),
-      updated_at: iso(now)
+  const clean=portalCandidateForPublicData(candidate);
+  const hash=await sha256Hex(JSON.stringify(clean));
+
+  if(existing){
+    const updates={
+      title:clean.title||existing.title,organization:clean.organization||existing.organization,
+      category:clean.category||existing.category,location:clean.location||existing.location,
+      eligibility:clean.eligibility||existing.eligibility,qualification:clean.qualification||existing.qualification,
+      vacancies:clean.vacancies||existing.vacancies,age_limit:clean.age_limit||existing.age_limit,
+      age_relaxation:clean.age_relaxation||existing.age_relaxation,fee:clean.fee||existing.fee,
+      selection_process:clean.selection_process||existing.selection_process,salary:clean.salary||existing.salary,
+      application_start:clean.application_start||existing.application_start,last_date:clean.last_date||existing.last_date,
+      exam_date:clean.exam_date||existing.exam_date,how_to_apply:clean.how_to_apply||existing.how_to_apply,
+      important_dates:clean.important_dates||existing.important_dates,
+      official_url:clean.official_url||existing.official_url,apply_url:clean.apply_url||existing.apply_url,
+      notification_url:clean.notification_url||existing.notification_url,
+      canonical_url:clean.canonical_url||existing.canonical_url,source_hash:hash,
+      last_seen_at:iso(now),last_verified_at:iso(now),updated_at:iso(now)
     };
-
-    const changed = Object.keys(updates).some(k =>
-      normalizeComparable(existing[k]) !== normalizeComparable(updates[k])
-    );
-
-    if (changed) {
-      const sets = Object.keys(updates).map(k => k + '=?').join(',');
-      await db.prepare(
-        'UPDATE items SET ' + sets + ' WHERE id=?'
-      ).bind(...Object.values(updates), existing.id).run();
-
-      await recordEvent(db,{
-        itemId:existing.id,
-        sourceId:null,
-        eventType:'portal_google_updated_existing_item',
-        severity:'info',
-        message:'Updated existing notification in place after Portal 1 + Portal 2 + Google cross-check: '+candidate.title,
-        evidence:{
-          verification_stage:'portal_google',
-          update_in_place:true,
-          google,
-          portals:portalEvidence?.portals||[]
-        }
-      });
+    const changed=Object.keys(updates).some(k=>normalizeComparable(existing[k])!==normalizeComparable(updates[k]));
+    if(changed){
+      const sets=Object.keys(updates).map(k=>k+'=?').join(',');
+      await db.prepare('UPDATE items SET '+sets+' WHERE id=?').bind(...Object.values(updates),existing.id).run();
+      await recordEvent(db,{itemId:existing.id,eventType:'portal_google_updated_existing_item',severity:'info',
+        message:'Updated existing notification in place after Branch B verification: '+candidate.title,
+        evidence:{verification_stage:'portal1_portal2_google',update_in_place:true,google}});
       stats.updated++;
-    } else {
-      await recordEvent(db,{
-        itemId:existing.id,
-        sourceId:null,
-        eventType:'portal_google_verified_existing_item',
-        severity:'info',
-        message:'Existing notification rechecked; no factual change detected: '+candidate.title,
-        evidence:{verification_stage:'portal_google',google,portals:portalEvidence?.portals||[]}
-      });
+    }else{
+      await recordEvent(db,{itemId:existing.id,eventType:'portal_google_verified_existing_item',severity:'info',
+        message:'Existing notification rechecked; no factual change detected: '+candidate.title,evidence:{verification_stage:'portal1_portal2_google'}});
     }
-
     return {published:existing.status==='published',existing:true,id:existing.id,updated:changed};
   }
-  const clean=portalCandidateForPublicData(candidate);
-  const hash=await sha256Hex(JSON.stringify({key,title:clean.title,organization:clean.organization,vacancies:clean.vacancies,qualification:clean.qualification,last_date:clean.last_date,application_start:clean.application_start,exam_date:clean.exam_date,fee:clean.fee,official_url:clean.official_url,notification_url:clean.notification_url,apply_url:clean.apply_url}));
-  const fields={notification_key:key,type:clean.type||'job',title:clean.title||null,organization:clean.organization||null,category:clean.category||'job',location:clean.location||null,description:null,eligibility:clean.eligibility||null,qualification:clean.qualification||null,vacancies:clean.vacancies||null,age_limit:clean.age_limit||null,age_relaxation:clean.age_relaxation||null,fee:clean.fee||null,selection_process:clean.selection_process||null,salary:clean.salary||null,application_start:clean.application_start||null,last_date:clean.last_date||null,exam_date:clean.exam_date||null,how_to_apply:null,important_dates:null,official_url:clean.official_url||null,apply_url:clean.apply_url||null,notification_url:clean.notification_url||null,source_url:clean.source_url||null,source_name:'Secondary Cross-check',source_id:null,source_hash:hash,canonical_url:clean.canonical_url||clean.source_url||null,status:'published',verification_status:'google_verified',confidence_score:90,evidence_json:safeJson({authority:'secondary_crosscheck',verification_stage:'portal1_portal2_google',publishable_from_portal:true,portals:portalEvidence?.portals||[],portal_comparison:portalEvidence?.comparison||null,google_verification:google}),last_verified_at:iso(now),last_seen_at:iso(now),published_at:iso(now)};
+
+  const fields={
+    notification_key:key,type:clean.type||'job',title:clean.title||null,organization:clean.organization||null,
+    category:clean.category||'job',location:clean.location||null,description:null,
+    eligibility:clean.eligibility||null,qualification:clean.qualification||null,vacancies:clean.vacancies||null,
+    age_limit:clean.age_limit||null,age_relaxation:clean.age_relaxation||null,fee:clean.fee||null,
+    selection_process:clean.selection_process||null,salary:clean.salary||null,
+    application_start:clean.application_start||null,last_date:clean.last_date||null,exam_date:clean.exam_date||null,
+    how_to_apply:clean.how_to_apply||null,important_dates:clean.important_dates||null,
+    official_url:clean.official_url||null,apply_url:clean.apply_url||null,notification_url:clean.notification_url||null,
+    source_url:null,source_name:null,source_id:null,source_hash:hash,canonical_url:clean.canonical_url||clean.official_url||null,
+    status:'published',verification_status:'google_verified',confidence_score:90,
+    evidence_json:safeJson({authority:'secondary_crosscheck',verification_stage:'portal1_portal2_google',public_firewall:'passed'}),
+    last_verified_at:iso(now),last_seen_at:iso(now),published_at:iso(now)
+  };
   const slug=slugify(clean.title||'job')+'-'+hash.slice(0,8);
-  const columns=Object.keys(fields); const placeholders=columns.map(()=>'?').join(',');
+  const columns=Object.keys(fields),placeholders=columns.map(()=>'?').join(',');
   const result=await db.prepare(`INSERT INTO items(slug,${columns.join(',')},created_at,updated_at) VALUES(?,${placeholders},CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(slug,...Object.values(fields)).run();
-  const id=result.meta?.last_row_id||null; stats.published++;
-  await recordEvent(db,{itemId:id,sourceId:portalEvidence?.source_id||null,eventType:'portal_google_published',severity:'info',message:'Published after Portal 1 + Portal 2 + Google cross-check: '+clean.title,evidence:{portal_comparison:portalEvidence?.comparison||null,google}});
+  const id=result.meta?.last_row_id||null;
+  stats.published++;
+  await recordEvent(db,{itemId:id,sourceId:null,eventType:'portal_google_published',severity:'info',
+    message:'Published after Branch B Portal 1 + Portal 2 + Google cross-check: '+clean.title,evidence:{verification_stage:'portal1_portal2_google',public_firewall:'passed'}});
   return {published:true,id};
 }
 
-async function queuePortalCandidateForVerification(db,env,candidate,portal,now,stats) {
-  const key=candidateKey(candidate); if(!key){stats.verificationRequired++;return;}
+async async function queuePortalCandidateForVerification(db,env,candidate,portal,now,stats) {
+  const key=candidateKey(candidate);
+  if(!key){stats.verificationRequired++;return;}
   const urlReview=portalUrlReview(candidate,portal);
-  const identity=await sha256Hex(portalSecondaryIdentity(candidate));
-  const state=await readPortalEvidence(db,identity);
-  if (state.updated_at) {
-    const age = Date.now() - new Date(state.updated_at).getTime();
-    if (!Number.isFinite(age) || age > PORTAL_EVIDENCE_TTL_DAYS * 86_400_000) {
-      for (const k of Object.keys(state)) {
-        if (/^\\d+$/.test(k)) delete state[k];
-      }
-    }
-  }
-  state.version=2; state.first_seen_at=state.first_seen_at||iso(now); state.updated_at=iso(now);
-  state[portal.id]={portal_id:portal.id,portal_name:portal.name,candidate:portalCandidateForPublicData(candidate),seen_at:iso(now)};
-  await writePortalEvidence(db,identity,state);
-  const entries=Object.keys(state).filter(k=>/^\d+$/.test(k)).map(id=>state[id]).filter(Boolean);
-  const portal1=entries.find(e=>/Sarkari Result/i.test(e.portal_name));
-  const portal2Entries=entries.filter(e=>/^(?:Employment News|NCS) \(Portal 2\)/i.test(e.portal_name));
-  if(!portal1 || !portal2Entries.length){
-    // Presence mismatch: one portal has the item, the other does not.
+  if(!urlReview.clean){
     stats.verificationRequired++;
-    const available = normalizePortalCandidateForValidation(portal1?.candidate || candidate);
-    const google = await googleCrossCheck(env, available);
-    const coverage = portalGoogleFieldCoverage(available, google);
-    const googleUrls = googleUrlCoverage(available, google);
-    await notify(db,'portal_verification','Admin verification required: Portal 1/2 presence mismatch',candidate.title+': the recruitment/information exists on one portal but is absent on the other. Google cross-check completed; Admin verification is required.',null);
-    await recordEvent(db,{sourceId:portal.id,eventType:'portal_presence_mismatch',severity:'warning',message:'Portal 1/2 presence mismatch: '+candidate.title,evidence:{identity,portal1_present:Boolean(portal1),portal2_present:Boolean(portal2Entries.length),google,coverage,google_urls:googleUrls}});
+    await notify(db,'portal_url_review','Admin verification required: portal URL problem',
+      candidate.title+': portal-provided URL failed the initial security gate. No Google cross-check or publish was performed.',null);
+    await recordEvent(db,{sourceId:portal.id,eventType:'portal_url_initial_gate_failed',severity:'warning',
+      message:'Initial portal URL gate failed: '+candidate.title,evidence:{urlReview}});
     return;
   }
+
+  const identity=await sha256Hex(portalSecondaryIdentity(candidate));
+  const state=await readPortalEvidence(db,identity);
+  if(state.updated_at){
+    const age=Date.now()-new Date(state.updated_at).getTime();
+    if(!Number.isFinite(age)||age>PORTAL_EVIDENCE_TTL_DAYS*86_400_000){
+      for(const k of Object.keys(state)) if(/^\\d+$/.test(k)) delete state[k];
+    }
+  }
+  state.version=3; state.first_seen_at=state.first_seen_at||iso(now); state.updated_at=iso(now);
+  state[portal.id]={portal_id:portal.id,portal_name:portal.name,candidate:portalCandidateForPublicData(candidate),seen_at:iso(now)};
+  await writePortalEvidence(db,identity,state);
+
+  const entries=Object.keys(state).filter(k=>/^\\d+$/.test(k)).map(id=>state[id]).filter(Boolean);
+  const portal1=entries.find(e=>/Sarkari Result/i.test(e.portal_name));
+  const portal2Entries=entries.filter(e=>/^(?:Employment News|NCS) \(Portal 2\)/i.test(e.portal_name));
+
+  // HARD PRESENCE GATE: mismatch goes directly to Admin. Google is not called.
+  if(!portal1 || !portal2Entries.length){
+    stats.verificationRequired++;
+    await notify(db,'portal_verification','Admin verification required: Portal 1/2 presence mismatch',
+      candidate.title+': one required secondary portal side is missing. Google cross-check was intentionally not run.',null);
+    await recordEvent(db,{sourceId:portal.id,eventType:'portal_presence_mismatch',severity:'warning',
+      message:'Portal 1/2 presence mismatch: '+candidate.title,
+      evidence:{identity,portal1_present:Boolean(portal1),portal2_present:Boolean(portal2Entries.length),reason:'PRESENCE_MISMATCH_NO_GOOGLE'}});
+    return;
+  }
+
   const portal2=portal2Entries[0];
   if(portal2Entries.length>1){
     const secondaryComparison=comparePortalCandidates(portal2Entries[0].candidate,portal2Entries[1].candidate);
     if(!secondaryComparison.agreement){
       stats.verificationRequired++;
-      const available = normalizePortalCandidateForValidation(portal2Entries[0].candidate || candidate);
-      const google = await googleCrossCheck(env, available);
-      const coverage = portalGoogleFieldCoverage(available, google);
-      const googleUrls = googleUrlCoverage(available, google);
-      await notify(db,'portal_verification','Admin verification required: Portal 2 mismatch',candidate.title+': Employment News and NCS contain conflicting or missing factual information. Google cross-check completed; Admin verification is required.',null);
-      await recordEvent(db,{sourceId:portal.id,eventType:'portal2_source_mismatch',severity:'warning',message:'Portal 2 source mismatch: '+candidate.title,evidence:{secondaryComparison,google,coverage,google_urls:googleUrls}});
+      await notify(db,'portal_verification','Admin verification required: Portal 2 mismatch',
+        candidate.title+': the available Portal 2 sources contain conflicting factual data. Google cross-check was intentionally not run.',null);
+      await recordEvent(db,{sourceId:portal.id,eventType:'portal2_source_mismatch',severity:'warning',
+        message:'Portal 2 source mismatch: '+candidate.title,evidence:{secondaryComparison}});
       return;
     }
   }
+
   const comparison=comparePortalCandidates(portal1.candidate,portal2.candidate);
   if(!comparison.agreement){
     stats.verificationRequired++;
-    const available = normalizePortalCandidateForValidation(portal1.candidate || portal2.candidate || candidate);
-    const google = await googleCrossCheck(env, available);
-    const coverage = portalGoogleFieldCoverage(available, google);
-    const googleUrls = googleUrlCoverage(available, google);
-    await notify(db,'portal_verification','Admin verification required: Portal 1/2 mismatch',candidate.title+': Portal 1 and Portal 2 contain conflicting or missing factual information. Google cross-check completed; Admin verification is required.',null);
-    await recordEvent(db,{sourceId:portal.id,eventType:'portal_comparison_mismatch',severity:'warning',message:'Portal 1/2 mismatch: '+candidate.title,evidence:{comparison,google,coverage,google_urls:googleUrls}});
+    await notify(db,'portal_verification','Admin verification required: Portal 1/2 factual mismatch',
+      candidate.title+': Portal 1 and Portal 2 contain conflicting factual information. Google cross-check was intentionally not run.',null);
+    await recordEvent(db,{sourceId:portal.id,eventType:'portal_comparison_mismatch',severity:'warning',
+      message:'Portal 1/2 factual mismatch: '+candidate.title,evidence:{comparison}});
     return;
   }
-  const merged={...portal1.candidate};
-  for(const field of portalImportantFields()){
-    merged[field]=portal1.candidate?.[field]||portal2.candidate?.[field]||null;
-  }
 
-  /*
-    Branch B gate order:
-    Portal comparison -> Google -> Data validation -> 3 URL validation
-    -> final identity check -> update existing / publish new.
-  */
+  const merged={...portal1.candidate};
+  for(const field of portalImportantFields()) merged[field]=portal1.candidate?.[field]||portal2.candidate?.[field]||null;
+
   const google=await googleCrossCheck(env,merged);
   const coverage=portalGoogleFieldCoverage(merged,google);
-
   if(google.status!=='confirmed'||google.verified!==true||!coverage.sufficient){
     stats.verificationRequired++;
-    await notify(db,'portal_verification','Admin verification required: Google cross-check failed',candidate.title+': Google cross-check/data confirmation did not pass; automatic publishing is blocked.',null);
-    await recordEvent(db,{sourceId:portal.id,eventType:'google_crosscheck_failed',severity:'warning',message:'Google cross-check failed: '+candidate.title,evidence:{google,coverage,comparison}});
+    await notify(db,'portal_verification','Admin verification required: Google cross-check failed',
+      candidate.title+': Google cross-check did not pass; automatic publishing is blocked.',null);
+    await recordEvent(db,{sourceId:portal.id,eventType:'google_crosscheck_failed',severity:'warning',
+      message:'Google cross-check failed: '+candidate.title,evidence:{google,coverage,comparison}});
     return;
   }
 
-  const validationCandidate = normalizePortalCandidateForValidation(merged);
-  const dataValidation = validatePortalRequiredData(validationCandidate);
-
+  const validationCandidate=normalizePortalCandidateForValidation(merged);
+  const dataValidation=validatePortalRequiredData(validationCandidate);
   if(!dataValidation.clean){
     stats.verificationRequired++;
-    await notify(db,'portal_verification','Admin verification required: incomplete data',candidate.title+': required factual fields are missing.',null);
-    await recordEvent(db,{sourceId:portal.id,eventType:'portal_required_data_missing',severity:'warning',message:'Required Portal 1/2 data missing: '+candidate.title,evidence:{missing:dataValidation.missing,comparison,google}});
+    await notify(db,'portal_verification','Admin verification required: incomplete data',
+      candidate.title+': required factual fields are missing.',null);
+    await recordEvent(db,{sourceId:portal.id,eventType:'portal_required_data_missing',severity:'warning',
+      message:'Required Portal 1/2 data missing: '+candidate.title,evidence:{missing:dataValidation.missing,comparison,google}});
     return;
   }
 
   const finalUrlProblems=[];
+  const inspectedUrls={};
   for(const field of ['official_url','notification_url','apply_url']){
     const value=validationCandidate[field];
-    if(!value){
-      finalUrlProblems.push({field,reason:'missing'});
-      continue;
-    }
-    if(isPortalOwnedUrl(value,portal)){
-      finalUrlProblems.push({field,reason:'secondary_domain_url'});
-      continue;
-    }
-    if(urlHasTrackingSignal(value)){
-      finalUrlProblems.push({field,reason:'tracking_or_redirect_signal'});
-    }
+    if(!value){finalUrlProblems.push({field,reason:'MISSING_URL'});continue;}
+    if(isPortalOwnedUrl(value,portal)){finalUrlProblems.push({field,reason:'NON_OFFICIAL_URL'});continue;}
+    if(urlHasTrackingSignal(value)){finalUrlProblems.push({field,reason:'TRACKING_URL'});continue;}
+    inspectedUrls[field]=await inspectUrlChain(value,field);
+    if(!inspectedUrls[field].clean) finalUrlProblems.push(...inspectedUrls[field].problems);
+    else validationCandidate[field]=inspectedUrls[field].url;
   }
 
   const googleUrls=googleUrlCoverage(validationCandidate,google);
-  if(!googleUrls.clean){
-    finalUrlProblems.push(...googleUrls.problems.map(problem=>({...problem,reason:'google_url_confirmation_failed'})));
-  }
+  if(!googleUrls.clean) finalUrlProblems.push(...googleUrls.problems.map(problem=>({...problem,reason:'GOOGLE_URL_CONFIRMATION_FAILED'})));
+
+  const firewall=publicContentFirewall(validationCandidate);
+  if(!firewall.clean) finalUrlProblems.push(...firewall.hits);
 
   if(finalUrlProblems.length){
     stats.verificationRequired++;
-    await notify(db,'portal_url_review','Admin verification required: URL problem',candidate.title+': final 3-URL validation failed.',null);
-    await recordEvent(db,{sourceId:portal.id,eventType:'portal_url_validation_failed',severity:'warning',message:'Final 3-URL validation failed: '+candidate.title,evidence:{problems:finalUrlProblems,comparison,google,google_urls:googleUrls}});
+    await notify(db,'portal_url_review','Admin verification required: URL/public-data safety failure',
+      candidate.title+': 3-URL validation or public-content firewall failed. No tracker or portal URL was published.',null);
+    await recordEvent(db,{sourceId:portal.id,eventType:'portal_url_or_firewall_failed',severity:'warning',
+      message:'Branch B final URL/public firewall failed: '+candidate.title,evidence:{problems:finalUrlProblems,inspectedUrls,comparison,google,google_urls:googleUrls,firewall}});
     return;
   }
 
-  /*
-    Final identity/duplicate gate. The publish function repeats this check
-    defensively, so a concurrent/replayed monitor run cannot create a
-    duplicate merely because the earlier staging state was old.
-  */
   const finalIdentityKey=candidateKey(validationCandidate);
   const finalExisting=await findExistingItem(db,validationCandidate,finalIdentityKey);
-
-  await publishPortalVerifiedCandidate(
-    db,
-    validationCandidate,
-    {
-      source_id:portal.id,
-      portals:[portal1.portal_name,...portal2Entries.map(e=>e.portal_name)],
-      comparison,
-      final_identity_checked:true,
-      existing_id:finalExisting?.id||null
-    },
-    {
-      ...google,
-      field_coverage:coverage,
-      url_coverage:googleUrls
-    },
-    now,
-    stats
-  );
+  await publishPortalVerifiedCandidate(db,validationCandidate,
+    {source_id:portal.id,portals:[portal1.portal_name,...portal2Entries.map(e=>e.portal_name)],
+      comparison,final_identity_checked:true,existing_id:finalExisting?.id||null},
+    {...google,field_coverage:coverage,url_coverage:googleUrls},now,stats);
 }
 /* -------------------------------------------------------------------------- */
 /* Portal source selection                                                    */
