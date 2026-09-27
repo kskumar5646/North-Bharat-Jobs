@@ -1551,6 +1551,14 @@ async async function inspectUrlChain(value, field) {
   return {clean:false,url:null,chain,problems};
 }
 
+function hostFamily(a,b) {
+  try {
+    const ah=new URL(a).hostname.toLowerCase().replace(/^www\\./,'');
+    const bh=new URL(b).hostname.toLowerCase().replace(/^www\\./,'');
+    return ah===bh || ah.endsWith('.'+bh) || bh.endsWith('.'+ah);
+  } catch { return false; }
+}
+
 function publicContentFirewall(candidate) {
   const blocked=[
     /sarkari\\s*result/i,/employment\\s*news/i,/rojgar\\s*samachar/i,/\\bncs\\b/i,
@@ -1960,6 +1968,19 @@ async async async function queuePortalCandidateForVerification(db,env,candidate,
     inspectedUrls[field]=await inspectUrlChain(value,field);
     if(!inspectedUrls[field].clean) finalUrlProblems.push(...inspectedUrls[field].problems);
     else validationCandidate[field]=inspectedUrls[field].url;
+  }
+
+  let officialDomainError=null;
+  try {
+    const officialHost=new URL(validationCandidate.official_url).hostname;
+    for(const field of ['notification_url','apply_url']){
+      if(!hostFamily(validationCandidate.official_url,validationCandidate[field])){
+        officialDomainError={field,reason:'OFFICIAL_DOMAIN_MISMATCH',official_host:officialHost};
+        finalUrlProblems.push(officialDomainError);
+      }
+    }
+  } catch {
+    finalUrlProblems.push({field:'official_url',reason:'INVALID_OFFICIAL_DOMAIN'});
   }
 
   const googleUrls=googleUrlCoverage(validationCandidate,google);
