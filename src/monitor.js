@@ -51,7 +51,7 @@ const RETENTION_DAYS = 365;
 const SOURCE_BATCH = 1;
 const CANDIDATE_LIMIT = 8;
 
-const PORTAL_LIMIT = 2;
+const PORTAL_LIMIT = 3;
 
 const RETENTION_DELETE_BATCH = 100;
 const PORTAL_SCAN_DAYS = 1;
@@ -1587,13 +1587,20 @@ function comparePortalCandidates(a, b) {
   for (const field of portalImportantFields()) {
     const av = normalizeComparable(a?.[field]);
     const bv = normalizeComparable(b?.[field]);
-    if (!av || !bv) continue;
-    if (av === bv) matches.push(field);
-    else mismatches.push({
-      field,
-      portal1: a?.[field] ?? null,
-      portal2: b?.[field] ?? null
-    });
+
+    // Both absent: the required-data gate handles it later.
+    // One present and one absent is a real portal mismatch.
+    if (!av && !bv) continue;
+
+    if (av === bv) {
+      matches.push(field);
+    } else {
+      mismatches.push({
+        field,
+        portal1: a?.[field] ?? null,
+        portal2: b?.[field] ?? null
+      });
+    }
   }
 
   for (const field of ['official_url','notification_url','apply_url']) {
@@ -1885,44 +1892,89 @@ async function queuePortalCandidateForVerification(db,env,candidate,portal,now,s
     return;
   }
   const merged={...portal1.candidate};
-  for(const field of portalImportantFields()){merged[field]=portal1.candidate?.[field]||portal2.candidate?.[field]||null;}
-  merged.official_url=portal1.candidate?.official_url||portal2.candidate?.official_url||null;
-  merged.notification_url=portal1.candidate?.notification_url||portal2.candidate?.notification_url||null;
-  merged.apply_url=portal1.candidate?.apply_url||portal2.candidate?.apply_url||null;
-  const finalUrlProblems=[];
-  for(const field of ['official_url','notification_url','apply_url']){const value=merged[field];if(!value)finalUrlProblems.push({field,reason:'missing'});else if(isPortalOwnedUrl(value,portal))finalUrlProblems.push({field,reason:'secondary_domain_url'});else if(urlHasTrackingSignal(value))finalUrlProblems.push({field,reason:'tracking_or_redirect_signal'});}
-  if(finalUrlProblems.length){stats.verificationRequired++;await notify(db,'portal_url_review','Admin verification required: URL problem',candidate.title+': final URL validation failed.',null);await recordEvent(db,{sourceId:portal.id,eventType:'portal_url_validation_failed',severity:'warning',message:'Portal URL validation failed: '+candidate.title,evidence:{problems:finalUrlProblems}});return;}
-  const validationCandidate = normalizePortalCandidateForValidation(merged);
-  const dataValidation = validatePortalRequiredData(validationCandidate);
-  if (!dataValidation.clean) {
+  for(const field of portalImportantFields()){
+    merged[field]=portal1.candidate?.[field]||portal2.candidate?.[field]||null;
+  }
+
+  /*
+    Branch B gate order:
+    Portal comparison -> Google -> Data validation -> 3 URL validation
+    -> final identity check -> update existing / publish new.
+  */
+  const google=await googleCrossCheck(env,merged);
+  const coverage=portalGoogleFieldCoverage(merged,google);
+
+  if(google.status!=='confirmed'||google.verified!==true||!coverage.sufficient){
     stats.verificationRequired++;
-    await notify(
-      db,
-      'portal_verification',
-      'Admin verification required: incomplete data',
-      candidate.title + ': required factual fields are missing.',
-      null
-    );
-    await recordEvent(db,{
-      sourceId:portal.id,
-      eventType:'portal_required_data_missing',
-      severity:'warning',
-      message:'Required Portal 1/2 data missing: '+candidate.title,
-      evidence:{missing:dataValidation.missing,comparison}
-    });
+    await notify(db,'portal_verification','Admin verification required: Google cross-check failed',candidate.title+': Google cross-check/data confirmation did not pass; automatic publishing is blocked.',null);
+    await recordEvent(db,{sourceId:portal.id,eventType:'google_crosscheck_failed',severity:'warning',message:'Google cross-check failed: '+candidate.title,evidence:{google,coverage,comparison}});
     return;
   }
 
-  const google=await googleCrossCheck(env,validationCandidate);
-  const coverage=portalGoogleFieldCoverage(validationCandidate,google);
-  const googleUrls=googleUrlCoverage(validationCandidate,google);
-  if(google.status!=='confirmed'||google.verified!==true||!coverage.sufficient||!googleUrls.clean){
+  const validationCandidate = normalizePortalCandidateForValidation(merged);
+  const dataValidation = validatePortalRequiredData(validationCandidate);
+
+  if(!dataValidation.clean){
     stats.verificationRequired++;
-    await notify(db,'portal_verification','Admin verification required: Google cross-check failed',candidate.title+': Google cross-check/data/URL confirmation did not pass; automatic publishing is blocked.',null);
-    await recordEvent(db,{sourceId:portal.id,eventType:'google_crosscheck_failed',severity:'warning',message:'Google cross-check failed: '+candidate.title,evidence:{google,coverage,google_urls:googleUrls,data_validation:dataValidation,comparison}});
+    await notify(db,'portal_verification','Admin verification required: incomplete data',candidate.title+': required factual fields are missing.',null);
+    await recordEvent(db,{sourceId:portal.id,eventType:'portal_required_data_missing',severity:'warning',message:'Required Portal 1/2 data missing: '+candidate.title,evidence:{missing:dataValidation.missing,comparison,google}});
     return;
   }
-  await publishPortalVerifiedCandidate(db,validationCandidate,{source_id:portal.id,portals:[portal1.portal_name,...portal2Entries.map(e=>e.portal_name)],comparison},{...google,field_coverage:coverage,url_coverage:googleUrls},now,stats);
+
+  const finalUrlProblems=[];
+  for(const field of ['official_url','notification_url','apply_url']){
+    const value=validationCandidate[field];
+    if(!value){
+      finalUrlProblems.push({field,reason:'missing'});
+      continue;
+    }
+    if(isPortalOwnedUrl(value,portal)){
+      finalUrlProblems.push({field,reason:'secondary_domain_url'});
+      continue;
+    }
+    if(urlHasTrackingSignal(value)){
+      finalUrlProblems.push({field,reason:'tracking_or_redirect_signal'});
+    }
+  }
+
+  const googleUrls=googleUrlCoverage(validationCandidate,google);
+  if(!googleUrls.clean){
+    finalUrlProblems.push(...googleUrls.problems.map(problem=>({...problem,reason:'google_url_confirmation_failed'})));
+  }
+
+  if(finalUrlProblems.length){
+    stats.verificationRequired++;
+    await notify(db,'portal_url_review','Admin verification required: URL problem',candidate.title+': final 3-URL validation failed.',null);
+    await recordEvent(db,{sourceId:portal.id,eventType:'portal_url_validation_failed',severity:'warning',message:'Final 3-URL validation failed: '+candidate.title,evidence:{problems:finalUrlProblems,comparison,google,google_urls:googleUrls}});
+    return;
+  }
+
+  /*
+    Final identity/duplicate gate. The publish function repeats this check
+    defensively, so a concurrent/replayed monitor run cannot create a
+    duplicate merely because the earlier staging state was old.
+  */
+  const finalIdentityKey=candidateKey(validationCandidate);
+  const finalExisting=await findExistingItem(db,validationCandidate,finalIdentityKey);
+
+  await publishPortalVerifiedCandidate(
+    db,
+    validationCandidate,
+    {
+      source_id:portal.id,
+      portals:[portal1.portal_name,...portal2Entries.map(e=>e.portal_name)],
+      comparison,
+      final_identity_checked:true,
+      existing_id:finalExisting?.id||null
+    },
+    {
+      ...google,
+      field_coverage:coverage,
+      url_coverage:googleUrls
+    },
+    now,
+    stats
+  );
 }
 /* -------------------------------------------------------------------------- */
 /* Portal source selection                                                    */
@@ -1984,39 +2036,59 @@ async function ensureFixedPortalSources(db) {
     This also repairs the old placeholder Portal 1/Portal 2 rows without
     requiring a manual D1 edit.
   */
-  await db.prepare(`
-    INSERT INTO sources(
-      name,
-      role,
-      fallback_key,
-      base_url,
-      allowed_domains,
-      adapter,
-      enabled,
-      priority
-    )
-    VALUES(
-      'Sarkari Result (Portal 1)',
+  const fixedPortals = [
+    {
+      name: 'Sarkari Result (Portal 1)',
+      base_url: 'https://www.sarkariresult.com/',
+      allowed_domains: 'sarkariresult.com',
+      priority: 90
+    },
+    {
+      // Employment News / Rojgar Samachar
+      name: 'Employment News (Portal 2)',
+      base_url: 'https://www.employmentnews.gov.in/',
+      allowed_domains: 'employmentnews.gov.in',
+      priority: 91
+    },
+    {
+      name: 'NCS (Portal 2)',
+      base_url: 'https://www.ncs.gov.in/',
+      allowed_domains: 'ncs.gov.in',
+      priority: 92
+    }
+  ];
+
+  for (const portal of fixedPortals) {
+    await db.prepare(`
+      INSERT INTO sources(
+        name,
+        role,
+        fallback_key,
+        base_url,
+        allowed_domains,
+        adapter,
+        enabled,
+        priority
+      )
+      VALUES(?,?,?,?,?,'generic',1,?)
+      ON CONFLICT(name) DO UPDATE SET
+        role='portal',
+        fallback_key='*',
+        base_url=excluded.base_url,
+        allowed_domains=excluded.allowed_domains,
+        adapter='generic',
+        enabled=1,
+        priority=excluded.priority,
+        updated_at=CURRENT_TIMESTAMP
+    `).bind(
+      portal.name,
       'portal',
       '*',
-      'https://www.sarkariresult.com/',
-      'sarkariresult.com',
-      'generic',
-      1,
-      90
-    )
-    ON CONFLICT(name) DO UPDATE SET
-      role='portal',
-      fallback_key='*',
-      base_url=excluded.base_url,
-      allowed_domains=excluded.allowed_domains,
-      adapter='generic',
-      enabled=1,
-      priority=90,
-      updated_at=CURRENT_TIMESTAMP
-  `).run();
-
-
+      portal.base_url,
+      portal.allowed_domains,
+      portal.priority
+    ).run();
+  }
 
   /*
     No third portal may silently enter Branch B.
