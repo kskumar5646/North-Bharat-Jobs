@@ -168,14 +168,14 @@ function cookieToken(request) {
   const cookie =
     request.headers.get('cookie') || '';
 
-  const match =
-    cookie.match(
-      new RegExp(
-        `${COOKIE}=([^;]+)`
-      )
-    );
+  for (const part of cookie.split(';')) {
+    const [rawName, ...rawValue] = part.trim().split('=');
+    if (rawName === COOKIE) {
+      return rawValue.join('=') || null;
+    }
+  }
 
-  return match?.[1] || null;
+  return null;
 }
 
 function cookieHeader(
