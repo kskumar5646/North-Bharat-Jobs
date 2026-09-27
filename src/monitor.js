@@ -15,11 +15,11 @@
   7. Google is supporting cross-check evidence, not an authority.
   8. Any mismatch/error/unavailable/uncertainty -> Admin verification.
   8. Existing recruitment is updated in-place.
-  9. No duplicate for a revised notification.
-  10. Real revisions only are stored.
-  11. Temporary official-source failure must NOT destroy
+  10. No duplicate for a revised notification.
+  11. Real revisions only are stored.
+  12. Temporary official-source failure must NOT destroy
       an already published record.
-  12. Records older than 365 days are archived in bounded batches;
+  13. Records older than 365 days are archived in bounded batches;
       history and deduplication identity are preserved.
 */
 
