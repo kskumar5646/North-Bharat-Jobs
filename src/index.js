@@ -28,28 +28,33 @@ const jsonHeaders = {
 
 
 function hasPublicUrlTracking(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return false;
-  try {
-    const u = new URL(raw);
-    const keys = [...u.searchParams.keys()].map(k => k.toLowerCase());
-    if (keys.some(k => /^(utm_|gclid|dclid|fbclid|msclkid|mc_cid|mc_eid|yclid|_hs[a-z_]*|ref|referrer|campaign|tracking)/i.test(k))) return true;
-    return /(?:^|[/?=&_-])(redirect|redir|track|tracking|click|out|target|dest|destination)(?:[/?=&_-]|$)/i.test(u.pathname + u.search);
-  } catch {
-    return true;
-  }
+  const raw=String(value||'').trim();
+  if(!raw) return false;
+  try{
+    const u=new URL(raw);
+    const keys=[...u.searchParams.keys()].map(k=>k.toLowerCase());
+    const blocked=new Set(['utm_source','utm_medium','utm_campaign','utm_term','utm_content','gclid','dclid','fbclid','msclkid','mc_cid','mc_eid','yclid','ref','referrer','affiliate','aff','affiliate_id','clickid','click_id','campaign','tracking','track','source']);
+    if(keys.some(k=>blocked.has(k)||/^(utm_|tracking_|affiliate_|click_)/i.test(k))) return true;
+    const host=u.hostname.toLowerCase().replace(/^www\\./,'');
+    if(/^(?:bit\\.ly|tinyurl\\.com|t\\.co|goo\\.gl|is\\.gd|ow\\.ly|buff\\.ly|cutt\\.ly|rb\\.gy|rebrand\\.ly|lnkd\\.in)$/.test(host)) return true;
+    return /(?:^|[\\/_.-])(redirect|redir|track|tracking|click|affiliate|referral|out)(?:[\\/_.?&=-]|$)/i.test(u.pathname+u.search)
+      || /(?:^|[?&])(url|target|dest|destination|redirect|redirect_url|return|return_url|continue)=/i.test(u.search);
+  }catch{return true;}
 }
 
 function publicSafeUrl(value) {
-  const raw = String(value || '').trim();
-  if (!raw || hasPublicUrlTracking(raw)) return null;
-  try {
-    const u = new URL(raw);
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  const raw=String(value||'').trim();
+  if(!raw||hasPublicUrlTracking(raw)) return null;
+  try{
+    const u=new URL(raw);
+    if(u.protocol!=='http:'&&u.protocol!=='https:') return null;
+    const host=u.hostname.toLowerCase().replace(/^www\\./,'');
+    if(host==='localhost'||host.endsWith('.localhost')||host==='metadata.google.internal') return null;
+    if(/^(?:0|127\\.|10\\.|169\\.254\\.|192\\.168\\.|172\\.(?:1[6-9]|2\\d|3[0-1])\\.)/.test(host)) return null;
+    if(/^(?:::1|fc|fd|fe80)/i.test(host)) return null;
+    u.hash='';
     return u.toString();
-  } catch {
-    return null;
-  }
+  }catch{return null;}
 }
 
 function json(data, status = 200) {
@@ -340,191 +345,58 @@ async function ensureAdmin(env) {
 /*
   Public jobs list
 */
-async function publicList(
-  env,
-  url
-) {
-  const type =
-    url.searchParams.get('type');
-
-  const q =
-    (
-      url.searchParams.get('q') ||
-      ''
-    ).trim();
-
-  const requestedPage =
-    Number(
-      url.searchParams.get('page') ||
-      1
-    );
-
-  const requestedLimit =
-    Number(
-      url.searchParams.get('limit') ||
-      15
-    );
-
-  const page =
-    Number.isFinite(requestedPage)
-      ? Math.max(
-          1,
-          Math.floor(requestedPage)
-        )
-      : 1;
-
-  const limit =
-    Number.isFinite(requestedLimit)
-      ? Math.min(
-          30,
-          Math.max(
-            1,
-            Math.floor(requestedLimit)
-          )
-        )
-      : 15;
-
-  const offset =
-    (page - 1) * limit;
-
-  const where = [
-    `status='published'`,
-    `(
-      published_at IS NULL
-      OR published_at >= datetime('now','-365 day')
-    )`
-  ];
-
-  const args = [];
-
-  if (
-    type &&
-    PUBLIC_TYPES.includes(type)
-  ) {
-    where.push('type=?');
-    args.push(type);
+async async function publicList(env,url) {
+  const type=url.searchParams.get('type');
+  const q=(url.searchParams.get('q')||'').trim();
+  const requestedPage=Number(url.searchParams.get('page')||1);
+  const requestedLimit=Number(url.searchParams.get('limit')||15);
+  const page=Number.isFinite(requestedPage)?Math.max(1,Math.floor(requestedPage)):1;
+  const limit=Number.isFinite(requestedLimit)?Math.min(30,Math.max(1,Math.floor(requestedLimit))):15;
+  const offset=(page-1)*limit;
+  const where=[`status='published'`,`published_at IS NOT NULL`,`published_at >= datetime('now','-365 day')`];
+  const args=[];
+  if(type&&PUBLIC_TYPES.includes(type)){where.push('type=?');args.push(type);}
+  if(q){
+    const search='%'+q+'%';
+    where.push('(title LIKE ? OR organization LIKE ? OR qualification LIKE ? OR category LIKE ?)');
+    args.push(search,search,search,search);
   }
-
-  if (q) {
-    const search =
-      `%${q}%`;
-
-    where.push(`
-      (
-        title LIKE ?
-        OR organization LIKE ?
-        OR qualification LIKE ?
-        OR category LIKE ?
-      )
-    `);
-
-    args.push(
-      search,
-      search,
-      search,
-      search
-    );
-  }
-
-  const sql = `
-    SELECT
-      id,
-      slug,
-      type,
-      title,
-      organization,
-      category,
-      location,
-      qualification,
-      vacancies,
-      age_limit,
-      fee,
-      application_start,
-      last_date,
-      exam_date,
-      official_url,
-      apply_url,
-      notification_url,
-      published_at
-    FROM items
-    WHERE ${where.join(' AND ')}
-    ORDER BY
-      COALESCE(
-        published_at,
-        created_at
-      ) DESC,
-      id DESC
-    LIMIT ?
-    OFFSET ?
-  `;
-
-  const rows =
-    (
-      await env.DB
-        .prepare(sql)
-        .bind(
-          ...args,
-          limit,
-          offset
-        )
-        .all()
-    ).results || [];
-
-  return json({
-    ok: true,
-    page,
-    limit,
-    items: rows
-  });
+  const rows=(await env.DB.prepare(`
+    SELECT id,slug,type,title,organization,category,location,qualification,vacancies,
+           age_limit,age_relaxation,fee,selection_process,salary,application_start,last_date,
+           exam_date,how_to_apply,important_dates,official_url,apply_url,notification_url,
+           published_at,updated_at
+    FROM items WHERE ${where.join(' AND ')}
+    ORDER BY published_at DESC,id DESC LIMIT ? OFFSET ?
+  `).bind(...args,limit,offset).all()).results||[];
+  const items=rows.map(row=>({
+    ...row,
+    official_url:publicSafeUrl(row.official_url),
+    notification_url:publicSafeUrl(row.notification_url),
+    apply_url:publicSafeUrl(row.apply_url)
+  }));
+  return json({ok:true,page,limit,items});
 }
 
 /*
   Public item
 */
-async function publicItem(
-  env,
-  slug
-) {
-  const item =
-    await env.DB
-      .prepare(`
-        SELECT
-          id, slug, type, title, organization, category, location,
-          description, eligibility, qualification, vacancies, age_limit,
-          age_relaxation, fee, selection_process, salary,
-          application_start, last_date, exam_date, how_to_apply,
-          important_dates, official_url, apply_url, notification_url,
-          canonical_url, published_at, created_at, updated_at
-        
-        FROM items
-        WHERE
-          slug=?
-          AND status='published'
-          AND (
-            published_at IS NULL
-            OR published_at >= datetime('now','-365 day')
-          )
-      `)
-      .bind(slug)
-      .first();
-
-  if (!item) {
-    return json(
-      {
-        ok: false,
-        error: 'Not found'
-      },
-      404
-    );
-  }
-
-  item.official_url = publicSafeUrl(item.official_url);
-  item.notification_url = publicSafeUrl(item.notification_url);
-  item.apply_url = publicSafeUrl(item.apply_url);
-  return json({
-    ok: true,
-    item
-  });
+async async function publicItem(env,slug) {
+  const item=await env.DB.prepare(`
+    SELECT id,slug,type,title,organization,category,location,description,eligibility,qualification,
+           vacancies,age_limit,age_relaxation,fee,selection_process,salary,application_start,last_date,
+           exam_date,how_to_apply,important_dates,official_url,apply_url,notification_url,published_at,updated_at
+    FROM items
+    WHERE slug=? AND status='published' AND published_at IS NOT NULL
+      AND published_at >= datetime('now','-365 day')
+  `).bind(slug).first();
+  if(!item) return json({ok:false,error:'Not found'},404);
+  item.official_url=publicSafeUrl(item.official_url);
+  item.notification_url=publicSafeUrl(item.notification_url);
+  item.apply_url=publicSafeUrl(item.apply_url);
+  delete item.source_name; delete item.source_id; delete item.source_url; delete item.source_hash;
+  delete item.evidence_json; delete item.verification_status; delete item.confidence_score;
+  return json({ok:true,item});
 }
 
 /*
