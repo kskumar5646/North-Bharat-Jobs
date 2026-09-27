@@ -1814,7 +1814,59 @@ function extractCandidateFields(
         : null,
 
     organization:
-      source?.name || null
+      source?.name || null,
+
+    post:
+      extractLabeledValue(
+        text,
+        [
+          'post(?:\s+name)?',
+          'name\s+of\s+post',
+          'post\s+applied\s+for',
+          'designation'
+        ]
+      ),
+
+    location:
+      extractLabeledValue(
+        text,
+        [
+          'job\s+location',
+          'place\s+of\s+posting',
+          'posting\s+location',
+          'location'
+        ]
+      ),
+
+    age_relaxation:
+      extractLabeledValue(
+        text,
+        [
+          'age\s+relaxation',
+          'relaxation\s+in\s+upper\s+age'
+        ]
+      ),
+
+    advertisement_number:
+      extractLabeledValue(
+        text,
+        [
+          'advertisement\s*(?:no|number)',
+          'advt\.?\s*(?:no|number)',
+          'notification\s*(?:no|number)',
+          'employment\s+notice\s*(?:no|number)'
+        ]
+      ),
+
+    recruitment_edition:
+      extractLabeledValue(
+        text,
+        [
+          'recruitment\s+(?:year|cycle|edition)',
+          'advertisement\s+year',
+          'notification\s+year'
+        ]
+      )
   };
 
   return validateExtractedDates(fields);
@@ -1996,7 +2048,7 @@ function makeCandidate(page, source) {
     category,
 
     location:
-      null,
+      fields.location || null,
 
     description:
       body.slice(0, 3000).trim() || null,
@@ -2007,6 +2059,15 @@ function makeCandidate(page, source) {
     qualification:
       fields.qualification || null,
 
+    post:
+      fields.post || null,
+
+    advertisement_number:
+      fields.advertisement_number || null,
+
+    recruitment_edition:
+      fields.recruitment_edition || null,
+
     vacancies:
       fields.vacancies || null,
 
@@ -2014,7 +2075,7 @@ function makeCandidate(page, source) {
       fields.age_limit || null,
 
     age_relaxation:
-      null,
+      fields.age_relaxation || null,
 
     fee:
       fields.fee || null,
