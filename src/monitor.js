@@ -750,6 +750,7 @@ function buildOfficialFields(
 
   const requiresAdminReview =
     candidate?._requires_admin_review === true ||
+    ['official_url','notification_url','apply_url'].some(field => urlHasTrackingSignal(candidate?.[field])) ||
     !candidateHasAllRecruitmentUrls ||
     (
       recruitmentType &&
