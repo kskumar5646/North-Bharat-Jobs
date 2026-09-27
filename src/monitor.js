@@ -1552,24 +1552,75 @@ async function writePortalEvidence(db, identity, value) {
 }
 
 function portalImportantFields() {
-  return ['title','organization','vacancies','qualification','eligibility','age_limit','fee','application_start','last_date','exam_date','selection_process','salary'];
+  return [
+    'title','organization','advertisement_number','recruitment_edition',
+    'post','vacancies','qualification','eligibility','age_limit',
+    'age_relaxation','fee','application_start','last_date','exam_date',
+    'selection_process','salary','location','how_to_apply','important_dates'
+  ];
 }
 
 function comparePortalCandidates(a, b) {
-  const matches = []; const mismatches = [];
+  const matches = [];
+  const mismatches = [];
+
   for (const field of portalImportantFields()) {
-    const av = normalizeComparable(a?.[field]); const bv = normalizeComparable(b?.[field]);
+    const av = normalizeComparable(a?.[field]);
+    const bv = normalizeComparable(b?.[field]);
     if (!av || !bv) continue;
     if (av === bv) matches.push(field);
-    else mismatches.push({field, portal1:a?.[field] ?? null, portal2:b?.[field] ?? null});
+    else mismatches.push({
+      field,
+      portal1: a?.[field] ?? null,
+      portal2: b?.[field] ?? null
+    });
   }
-  const identityMatch = titleSimilarity(a?.title,b?.title) && (!a?.organization || !b?.organization || titleSimilarity(a?.organization,b?.organization));
-  return {identityMatch,matches,mismatches,agreement:identityMatch && mismatches.length===0 && matches.length>=1};
+
+  for (const field of ['official_url','notification_url','apply_url']) {
+    const av = normalizeComparable(a?.[field]);
+    const bv = normalizeComparable(b?.[field]);
+    if (av && bv && av !== bv) {
+      mismatches.push({
+        field,
+        portal1: a?.[field] ?? null,
+        portal2: b?.[field] ?? null
+      });
+    } else if (av && bv) {
+      matches.push(field);
+    }
+  }
+
+  const identityMatch =
+    titleSimilarity(a?.title,b?.title) &&
+    (!a?.organization || !b?.organization ||
+      titleSimilarity(a?.organization,b?.organization));
+
+  return {
+    identityMatch,
+    matches,
+    mismatches,
+    agreement:
+      identityMatch &&
+      mismatches.length === 0 &&
+      matches.length >= 1
+  };
 }
 
 function portalCandidateForPublicData(candidate) {
   const c = {...(candidate || {})};
-  c.description = null; c.how_to_apply = null; c.important_dates = null;
+
+  // Keep only structured, non-article values for public display.
+  c.description = null;
+  c.how_to_apply = String(c.apply_url || '').trim()
+    ? 'Apply through the official application link.'
+    : null;
+
+  const dates = [];
+  if (c.application_start) dates.push('Application Start: ' + c.application_start);
+  if (c.last_date) dates.push('Last Date: ' + c.last_date);
+  if (c.exam_date) dates.push('Exam Date: ' + c.exam_date);
+  c.important_dates = dates.length ? dates.join(' | ') : null;
+
   return c;
 }
 
