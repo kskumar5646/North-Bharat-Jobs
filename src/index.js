@@ -2152,14 +2152,45 @@ export default {
         return loginPage();
       }
 
-      return env.ASSETS.fetch(
-        new Request(
-          new URL(
-            '/admin.html',
-            request.url
-          ),
-          request
-        )
+      const adminResponse =
+        await env.ASSETS.fetch(
+          new Request(
+            new URL(
+              '/admin.html',
+              request.url
+            ),
+            request
+          )
+        );
+
+      const adminHeaders =
+        new Headers(
+          adminResponse.headers
+        );
+
+      adminHeaders.set(
+        'cache-control',
+        'no-store, no-cache, must-revalidate'
+      );
+      adminHeaders.set(
+        'pragma',
+        'no-cache'
+      );
+      adminHeaders.set(
+        'expires',
+        '0'
+      );
+
+      return new Response(
+        adminResponse.body,
+        {
+          status:
+            adminResponse.status,
+          statusText:
+            adminResponse.statusText,
+          headers:
+            adminHeaders
+        }
       );
     }
 
