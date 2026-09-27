@@ -1869,7 +1869,7 @@ async function queuePortalCandidateForVerification(db,env,candidate,portal,now,s
     await recordEvent(db,{sourceId:portal.id,eventType:'google_crosscheck_failed',severity:'warning',message:'Google cross-check failed: '+candidate.title,evidence:{google,coverage,google_urls:googleUrls,data_validation:dataValidation,comparison}});
     return;
   }
-  await publishPortalVerifiedCandidate(db,validationCandidate,{source_id:portal.id,portals:[portal1.portal_name,portal2.portal_name],comparison},{...google,field_coverage:coverage,url_coverage:googleUrls},now,stats);
+  await publishPortalVerifiedCandidate(db,validationCandidate,{source_id:portal.id,portals:[portal1.portal_name,...portal2Entries.map(e=>e.portal_name)],comparison},{...google,field_coverage:coverage,url_coverage:googleUrls},now,stats);
 }
 /* -------------------------------------------------------------------------- */
 /* Portal source selection                                                    */
@@ -1883,11 +1883,13 @@ async function getPortalSources(
     FIXED SECONDARY PORTALS
     -----------------------
     Portal 1 = Sarkari Result
-    Portal 2 = FreeJobAlert
+    Portal 2 = Employment News + NCS
 
-    These are secondary discovery/evidence sources only.
-    Branch B does not call the official-source verification branch.
-    Google is the third cross-check. Any unresolved issue goes to Admin.
+    Portal 2 is a two-source pool. A candidate must have matching
+    evidence with Portal 1 and at least one enabled Portal 2 source.
+    If both Portal 2 sources have the same recruitment, their data is
+    also compared before Google cross-check. Any mismatch/error goes Admin.
+    Branch B never calls official-source verification.
   */
   const result =
     await db
@@ -1899,12 +1901,14 @@ async function getPortalSources(
           AND role='portal'
           AND name IN (
             'Sarkari Result (Portal 1)',
-            'FreeJobAlert (Portal 2)'
+            'Employment News (Portal 2)',
+            'NCS (Portal 2)'
           )
         ORDER BY
           CASE name
             WHEN 'Sarkari Result (Portal 1)' THEN 1
-            WHEN 'FreeJobAlert (Portal 2)' THEN 2
+            WHEN 'Employment News (Portal 2)' THEN 2
+            WHEN 'NCS (Portal 2)' THEN 3
             ELSE 99
           END ASC
         LIMIT ?
