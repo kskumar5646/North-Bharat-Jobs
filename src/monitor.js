@@ -1196,6 +1196,17 @@ async function getPortalSources(
   db,
   official
 ) {
+  /*
+    FIXED SECONDARY PORTALS
+    -----------------------
+    Portal 1 = Sarkari Result
+    Portal 2 = FreeJobAlert
+
+    These are secondary evidence only. They can never become
+    the authority for publishing a recruitment. Official
+    organization + official notification/apply evidence remains
+    the final authority.
+  */
   const result =
     await db
       .prepare(`
@@ -1204,24 +1215,115 @@ async function getPortalSources(
         WHERE
           enabled=1
           AND role='portal'
-          AND (
-            fallback_key=?
-            OR fallback_key='*'
+          AND name IN (
+            'Sarkari Result (Portal 1)',
+            'FreeJobAlert (Portal 2)'
           )
         ORDER BY
-          priority ASC,
-          id ASC
+          CASE name
+            WHEN 'Sarkari Result (Portal 1)' THEN 1
+            WHEN 'FreeJobAlert (Portal 2)' THEN 2
+            ELSE 99
+          END ASC
         LIMIT ?
       `)
-      .bind(
-        official?.fallback_key || '*',
-        PORTAL_LIMIT
-      )
+      .bind(PORTAL_LIMIT)
       .all();
 
   return (
     result.results || []
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Fixed portal configuration                                                 */
+/* -------------------------------------------------------------------------- */
+
+async function ensureFixedPortalSources(db) {
+  /*
+    Make the two secondary sources deterministic on every monitor run.
+    This also repairs the old placeholder Portal 1/Portal 2 rows without
+    requiring a manual D1 edit.
+  */
+  await db.prepare(`
+    INSERT INTO sources(
+      name,
+      role,
+      fallback_key,
+      base_url,
+      allowed_domains,
+      adapter,
+      enabled,
+      priority
+    )
+    VALUES(
+      'Sarkari Result (Portal 1)',
+      'portal',
+      '*',
+      'https://www.sarkariresult.com/',
+      'sarkariresult.com',
+      'generic',
+      1,
+      90
+    )
+    ON CONFLICT(name) DO UPDATE SET
+      role='portal',
+      fallback_key='*',
+      base_url=excluded.base_url,
+      allowed_domains=excluded.allowed_domains,
+      adapter='generic',
+      enabled=1,
+      priority=90,
+      updated_at=CURRENT_TIMESTAMP
+  `).run();
+
+  await db.prepare(`
+    INSERT INTO sources(
+      name,
+      role,
+      fallback_key,
+      base_url,
+      allowed_domains,
+      adapter,
+      enabled,
+      priority
+    )
+    VALUES(
+      'FreeJobAlert (Portal 2)',
+      'portal',
+      '*',
+      'https://www.freejobalert.com/',
+      'freejobalert.com',
+      'generic',
+      1,
+      91
+    )
+    ON CONFLICT(name) DO UPDATE SET
+      role='portal',
+      fallback_key='*',
+      base_url=excluded.base_url,
+      allowed_domains=excluded.allowed_domains,
+      adapter='generic',
+      enabled=1,
+      priority=91,
+      updated_at=CURRENT_TIMESTAMP
+  `).run();
+
+  /*
+    No third portal may silently enter the RT fallback chain.
+  */
+  await db.prepare(`
+    UPDATE sources
+    SET
+      enabled=0,
+      updated_at=CURRENT_TIMESTAMP
+    WHERE
+      role='portal'
+      AND name NOT IN (
+        'Sarkari Result (Portal 1)',
+        'FreeJobAlert (Portal 2)'
+      )
+  `).run();
 }
 
 
@@ -2576,6 +2678,13 @@ export async function runMonitor(
 ) {
   const db =
     env.DB;
+
+  /*
+    Lock the secondary-source configuration before any fallback
+    decision is made. This keeps Portal 1/2 deterministic across
+    deployments and existing D1 databases.
+  */
+  await ensureFixedPortalSources(db);
 
   const started =
     new Date();
