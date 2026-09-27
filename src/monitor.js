@@ -56,6 +56,9 @@ const RETENTION_DELETE_BATCH = 100;
 const PORTAL_SCAN_DAYS = 1;
 const PORTAL_SEEN_URL_LIMIT = 2000;
 const PORTAL_NEW_CANDIDATE_LIMIT = 8;
+const PORTAL_SCAN_DAYS = 1;
+const PORTAL_SEEN_URL_LIMIT = 2000;
+const PORTAL_NEW_CANDIDATE_LIMIT = 8;
 
 
 
@@ -1272,6 +1275,7 @@ function portalScanDue(state, now) {
 async function runIndependentPortalScan(
   db,
   portal,
+  env,
   now,
   stats
 ) {
@@ -1355,6 +1359,7 @@ async function runIndependentPortalScan(
 
       await queuePortalCandidateForVerification(
         db,
+        env,
         candidate,
         portal,
         now,
@@ -1414,6 +1419,69 @@ function normalizePortalStateUrl(value) {
   }
 }
 
+function portalHost(source) {
+  try { return new URL(source.base_url).hostname.toLowerCase().replace(/^www\\./, ''); } catch { return ''; }
+}
+
+function urlHasTrackingSignal(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  try {
+    const url = new URL(raw);
+    const params = ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','fbclid','gclid','msclkid','mc_cid','mc_eid'];
+    if (params.some(name => url.searchParams.has(name))) return true;
+    return /(?:redirect|redir|track|tracking|click|out\\b|go\\b|url=|target=|dest=|destination=)/i.test(url.pathname + url.search);
+  } catch { return /(?:redirect|redir|track|tracking|click|url=|target=|dest=)/i.test(raw); }
+}
+
+function isPortalOwnedUrl(value, source) {
+  try {
+    const host = new URL(String(value)).hostname.toLowerCase().replace(/^www\\./, '');
+    const base = portalHost(source);
+    return Boolean(base && (host === base || host.endsWith('.' + base)));
+  } catch { return false; }
+}
+
+function portalUrlReview(candidate, source) {
+  const problems = [];
+  for (const field of ['official_url','notification_url','apply_url']) {
+    const value = candidate?.[field];
+    if (!value) continue;
+    if (isPortalOwnedUrl(value, source)) problems.push({field, reason:'secondary_domain_url'});
+    if (urlHasTrackingSignal(value)) problems.push({field, reason:'tracking_or_redirect_signal'});
+  }
+  return {clean: problems.length === 0, problems};
+}
+
+async function googleCrossCheck(env, candidate) {
+  const apiKey = String(env?.GOOGLE_CSE_API_KEY || '').trim();
+  const cx = String(env?.GOOGLE_CSE_CX || '').trim();
+  if (!apiKey || !cx) return {status:'unavailable', verified:false, reason:'google_search_not_configured'};
+  const queries = [
+    [candidate?.organization,candidate?.title,candidate?.notification_url].filter(Boolean).join(' '),
+    [candidate?.organization,candidate?.title,candidate?.last_date].filter(Boolean).join(' ')
+  ].filter(Boolean);
+  const results=[];
+  for (const q of queries.slice(0,2)) {
+    try {
+      const r=await fetch('https://www.googleapis.com/customsearch/v1?key='+encodeURIComponent(apiKey)+'&cx='+encodeURIComponent(cx)+'&q='+encodeURIComponent(q),{headers:{Accept:'application/json'}});
+      if(!r.ok) continue;
+      const j=await r.json();
+      for(const item of (j?.items||[])) results.push({title:item.title||'',link:item.link||'',snippet:item.snippet||''});
+    } catch {}
+  }
+  if(!results.length) return {status:'not_confirmed',verified:false,reason:'google_returned_no_results'};
+  const org=normalizeComparable(candidate?.organization);
+  const title=normalizeComparable(candidate?.title);
+  const words=title.split(/\\W+/).filter(w=>w.length>=4);
+  const relevant=results.filter(item=>{
+    const hay=normalizeComparable((item.title||'')+' '+(item.link||'')+' '+(item.snippet||''));
+    const orgMatch=!org || hay.includes(org);
+    const matches=words.filter(w=>hay.includes(w)).length;
+    return orgMatch && matches>=Math.max(2,Math.ceil(words.length*0.35));
+  });
+  return {status:relevant.length?'confirmed':'not_confirmed',verified:relevant.length>0,results:relevant.slice(0,5)};
+}
 /*
   Portal candidates enter a verification_required record.
   No portal candidate can become published merely because
@@ -1421,6 +1489,7 @@ function normalizePortalStateUrl(value) {
 */
 async function queuePortalCandidateForVerification(
   db,
+  env,
   candidate,
   portal,
   now,
@@ -1432,6 +1501,9 @@ async function queuePortalCandidateForVerification(
   if (!key) {
     return;
   }
+
+  const urlReview = portalUrlReview(candidate, portal);
+  const google = await googleCrossCheck(env, candidate);
 
   const existing =
     await findExistingItem(
@@ -1534,7 +1606,9 @@ async function queuePortalCandidateForVerification(
       verification_stage: 'secondary_evidence',
       publishable_from_portal: false,
       portal_source_id: portal.id,
-      portal_discovery: true
+      portal_discovery: true,
+      google_verification: google,
+      url_review: urlReview
     }),
     iso(now)
   ).run();
@@ -1551,7 +1625,7 @@ async function queuePortalCandidateForVerification(
     db,
     'portal_verification',
     'Portal discovery requires verification',
-    `${candidate.title}: secondary evidence discovered; Google cross-check and official-source verification are required before publish.`,
+    `${candidate.title}: secondary evidence discovered; Google cross-check status=${google.status}. Official-source verification is required before publish.`,
     created?.id || null
   );
 
@@ -1573,6 +1647,11 @@ async function queuePortalCandidateForVerification(
   );
 
   stats.verificationRequired++;
+
+  if (!urlReview.clean) {
+    await notify(db,'portal_url_review','Admin verification required: portal/tracking URL detected',candidate.title + ': secondary-domain or tracking/redirect URL detected. Final official URLs must be verified before publish.',created?.id || null);
+    await recordEvent(db,{itemId:created?.id || null,sourceId:portal.id,eventType:'portal_tracking_url_detected',severity:'warning',message:'Portal/tracking URL detected: '+candidate.title,evidence:{url_review:urlReview,google_verification:google}});
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -3116,6 +3195,7 @@ export async function runMonitor(
       await runIndependentPortalScan(
         db,
         portal,
+        env,
         new Date(),
         stats
       );
