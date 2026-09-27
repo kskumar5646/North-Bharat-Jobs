@@ -1827,8 +1827,8 @@ async function queuePortalCandidateForVerification(db,env,candidate,portal,now,s
   await writePortalEvidence(db,identity,state);
   const entries=Object.keys(state).filter(k=>/^\d+$/.test(k)).map(id=>state[id]).filter(Boolean);
   const portal1=entries.find(e=>/Sarkari Result/i.test(e.portal_name));
-  const portal2=entries.find(e=>/FreeJobAlert/i.test(e.portal_name));
-  if(!portal1 || !portal2){await recordEvent(db,{sourceId:portal.id,eventType:'portal_evidence_pending',severity:'info',message:'Waiting for both Portal 1 and Portal 2: '+candidate.title,evidence:{identity,portal_id:portal.id}});return;}
+  const portal2Entries=entries.filter(e=>/^(?:Employment News|NCS) \(Portal 2\)/i.test(e.portal_name));
+  if(!portal1 || !portal2Entries.length){await recordEvent(db,{sourceId:portal.id,eventType:'portal_evidence_pending',severity:'info',message:'Waiting for Portal 1 + at least one Portal 2 source: '+candidate.title,evidence:{identity,portal_id:portal.id,portal2_available:portal2Entries.map(e=>e.portal_name)}});return;} const portal2=portal2Entries[0]; if(portal2Entries.length>1){const secondaryComparison=comparePortalCandidates(portal2Entries[0].candidate,portal2Entries[1].candidate);if(!secondaryComparison.agreement){stats.verificationRequired++;await notify(db,'portal_verification','Admin verification required: Portal 2 mismatch',candidate.title+': Employment News and NCS contain conflicting or insufficient factual data.',null);await recordEvent(db,{sourceId:portal.id,eventType:'portal2_source_mismatch',severity:'warning',message:'Portal 2 source mismatch: '+candidate.title,evidence:{secondaryComparison}});return;}}
   const comparison=comparePortalCandidates(portal1.candidate,portal2.candidate);
   if(!comparison.agreement){stats.verificationRequired++;await notify(db,'portal_verification','Admin verification required: Portal 1/2 mismatch',candidate.title+': Portal 1 and Portal 2 contain conflicting or insufficient factual data.',null);await recordEvent(db,{sourceId:portal.id,eventType:'portal_comparison_mismatch',severity:'warning',message:'Portal 1/2 mismatch: '+candidate.title,evidence:{comparison}});return;}
   const merged={...portal1.candidate};
@@ -1963,37 +1963,7 @@ async function ensureFixedPortalSources(db) {
       updated_at=CURRENT_TIMESTAMP
   `).run();
 
-  await db.prepare(`
-    INSERT INTO sources(
-      name,
-      role,
-      fallback_key,
-      base_url,
-      allowed_domains,
-      adapter,
-      enabled,
-      priority
-    )
-    VALUES(
-      'FreeJobAlert (Portal 2)',
-      'portal',
-      '*',
-      'https://www.freejobalert.com/',
-      'freejobalert.com',
-      'generic',
-      0,
-      91
-    )
-    ON CONFLICT(name) DO UPDATE SET
-      role='portal',
-      fallback_key='*',
-      base_url=excluded.base_url,
-      allowed_domains=excluded.allowed_domains,
-      adapter='generic',
-      enabled=0,
-      priority=91,
-      updated_at=CURRENT_TIMESTAMP
-  `).run();
+
 
   /*
     No third portal may silently enter Branch B.
@@ -2007,7 +1977,8 @@ async function ensureFixedPortalSources(db) {
       role='portal'
       AND name NOT IN (
         'Sarkari Result (Portal 1)',
-        'FreeJobAlert (Portal 2)'
+        'Employment News (Portal 2)',
+        'NCS (Portal 2)'
       )
   `).run();
 }
