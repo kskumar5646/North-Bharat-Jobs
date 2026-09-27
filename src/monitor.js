@@ -1847,9 +1847,42 @@ async function queuePortalCandidateForVerification(db,env,candidate,portal,now,s
   const entries=Object.keys(state).filter(k=>/^\d+$/.test(k)).map(id=>state[id]).filter(Boolean);
   const portal1=entries.find(e=>/Sarkari Result/i.test(e.portal_name));
   const portal2Entries=entries.filter(e=>/^(?:Employment News|NCS) \(Portal 2\)/i.test(e.portal_name));
-  if(!portal1 || !portal2Entries.length){await recordEvent(db,{sourceId:portal.id,eventType:'portal_evidence_pending',severity:'info',message:'Waiting for Portal 1 + at least one Portal 2 source: '+candidate.title,evidence:{identity,portal_id:portal.id,portal2_available:portal2Entries.map(e=>e.portal_name)}});return;} const portal2=portal2Entries[0]; if(portal2Entries.length>1){const secondaryComparison=comparePortalCandidates(portal2Entries[0].candidate,portal2Entries[1].candidate);if(!secondaryComparison.agreement){stats.verificationRequired++;await notify(db,'portal_verification','Admin verification required: Portal 2 mismatch',candidate.title+': Employment News and NCS contain conflicting or insufficient factual data.',null);await recordEvent(db,{sourceId:portal.id,eventType:'portal2_source_mismatch',severity:'warning',message:'Portal 2 source mismatch: '+candidate.title,evidence:{secondaryComparison}});return;}}
+  if(!portal1 || !portal2Entries.length){
+    // Presence mismatch: one portal has the item, the other does not.
+    stats.verificationRequired++;
+    const available = normalizePortalCandidateForValidation(portal1?.candidate || candidate);
+    const google = await googleCrossCheck(env, available);
+    const coverage = portalGoogleFieldCoverage(available, google);
+    const googleUrls = googleUrlCoverage(available, google);
+    await notify(db,'portal_verification','Admin verification required: Portal 1/2 presence mismatch',candidate.title+': the recruitment/information exists on one portal but is absent on the other. Google cross-check completed; Admin verification is required.',null);
+    await recordEvent(db,{sourceId:portal.id,eventType:'portal_presence_mismatch',severity:'warning',message:'Portal 1/2 presence mismatch: '+candidate.title,evidence:{identity,portal1_present:Boolean(portal1),portal2_present:Boolean(portal2Entries.length),google,coverage,google_urls:googleUrls}});
+    return;
+  }
+  const portal2=portal2Entries[0];
+  if(portal2Entries.length>1){
+    const secondaryComparison=comparePortalCandidates(portal2Entries[0].candidate,portal2Entries[1].candidate);
+    if(!secondaryComparison.agreement){
+      stats.verificationRequired++;
+      const available = normalizePortalCandidateForValidation(portal2Entries[0].candidate || candidate);
+      const google = await googleCrossCheck(env, available);
+      const coverage = portalGoogleFieldCoverage(available, google);
+      const googleUrls = googleUrlCoverage(available, google);
+      await notify(db,'portal_verification','Admin verification required: Portal 2 mismatch',candidate.title+': Employment News and NCS contain conflicting or missing factual information. Google cross-check completed; Admin verification is required.',null);
+      await recordEvent(db,{sourceId:portal.id,eventType:'portal2_source_mismatch',severity:'warning',message:'Portal 2 source mismatch: '+candidate.title,evidence:{secondaryComparison,google,coverage,google_urls:googleUrls}});
+      return;
+    }
+  }
   const comparison=comparePortalCandidates(portal1.candidate,portal2.candidate);
-  if(!comparison.agreement){stats.verificationRequired++;await notify(db,'portal_verification','Admin verification required: Portal 1/2 mismatch',candidate.title+': Portal 1 and Portal 2 contain conflicting or insufficient factual data.',null);await recordEvent(db,{sourceId:portal.id,eventType:'portal_comparison_mismatch',severity:'warning',message:'Portal 1/2 mismatch: '+candidate.title,evidence:{comparison}});return;}
+  if(!comparison.agreement){
+    stats.verificationRequired++;
+    const available = normalizePortalCandidateForValidation(portal1.candidate || portal2.candidate || candidate);
+    const google = await googleCrossCheck(env, available);
+    const coverage = portalGoogleFieldCoverage(available, google);
+    const googleUrls = googleUrlCoverage(available, google);
+    await notify(db,'portal_verification','Admin verification required: Portal 1/2 mismatch',candidate.title+': Portal 1 and Portal 2 contain conflicting or missing factual information. Google cross-check completed; Admin verification is required.',null);
+    await recordEvent(db,{sourceId:portal.id,eventType:'portal_comparison_mismatch',severity:'warning',message:'Portal 1/2 mismatch: '+candidate.title,evidence:{comparison,google,coverage,google_urls:googleUrls}});
+    return;
+  }
   const merged={...portal1.candidate};
   for(const field of portalImportantFields()){merged[field]=portal1.candidate?.[field]||portal2.candidate?.[field]||null;}
   merged.official_url=portal1.candidate?.official_url||portal2.candidate?.official_url||null;
