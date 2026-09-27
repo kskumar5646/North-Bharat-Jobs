@@ -62,6 +62,7 @@ const PORTAL_POLICY = {
 
 const CURRENT_YEAR = new Date().getUTCFullYear();
 const MIN_ACCEPTABLE_YEAR = CURRENT_YEAR - 1;
+const PORTAL_CURRENT_YEAR = CURRENT_YEAR;
 
 
 /* -------------------------------------------------------------------------- */
@@ -446,6 +447,36 @@ function sameUrl(a, b) {
   }
 }
 
+
+function portalHasNonCurrentYear(value) {
+  const text = String(value || '');
+  const matches = text.match(/\b(?:19\d{2}|20\d{2})\b/g);
+  if (!matches?.length) return false;
+  return matches.some(year => Number(year) !== PORTAL_CURRENT_YEAR);
+}
+
+function portalCandidateIsCurrent(candidate) {
+  const fields = [
+    candidate?.title,
+    candidate?.source_url,
+    candidate?.canonical_url,
+    candidate?.notification_url,
+    candidate?.advertisement_number,
+    candidate?.recruitment_edition
+  ];
+  if (fields.some(portalHasNonCurrentYear)) return false;
+
+  const dateFields = [
+    candidate?.application_start,
+    candidate?.last_date
+  ];
+  for (const value of dateFields) {
+    const match = String(value || '').match(/\b(?:19\d{2}|20\d{2})\b/);
+    if (match && Number(match[0]) < PORTAL_CURRENT_YEAR) return false;
+  }
+
+  return true;
+}
 
 function urlHasOldYear(url) {
   const value = String(url || '');
@@ -2514,7 +2545,9 @@ export async function discoverPortalNewOnly(
           normalizeUrl(link.url);
         return (
           normalized &&
-          !seen.has(normalized)
+          !seen.has(normalized) &&
+          !portalHasNonCurrentYear(link.url) &&
+          !portalHasNonCurrentYear(link.text)
         );
       })
       .map(link => ({
@@ -2558,6 +2591,12 @@ export async function discoverPortalNewOnly(
       We do not download/read its body here.
     */
     if (isPdfUrl(normalized)) {
+      if (
+        portalHasNonCurrentYear(normalized) ||
+        portalHasNonCurrentYear(link.text)
+      ) {
+        continue;
+      }
       candidates.push(
         sanitizePortalCandidate({
           type: 'job',
@@ -2659,7 +2698,8 @@ export async function discoverPortalNewOnly(
         (
           candidate.type === 'job' ||
           candidate.type === 'recruitment'
-        )
+        ) &&
+        portalCandidateIsCurrent(candidate)
       ) {
         candidate._portal_new_discovery = true;
 
