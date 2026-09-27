@@ -1571,9 +1571,51 @@ function portalGoogleFieldCoverage(candidate, google) {
 
 async function publishPortalVerifiedCandidate(db,candidate,portalEvidence,google,now,stats) {
   const key=candidateKey(candidate); if(!key) return {published:false,reason:'missing_identity'};
-  const existing=await findExistingItem(db,candidate,key);
+  let existing=await findExistingItem(db,candidate,key);
+
+  /*
+    Cross-source identity fallback:
+    Portal notification keys can differ from official-source keys.
+    Only merge when the organization/title match AND at least one
+    stable identity signal agrees (notification/apply/canonical URL
+    or the same application window). This avoids merging genuinely
+    new editions such as NDA I vs NDA II.
+  */
+  if(!existing && candidate?.organization && candidate?.title){
+    const rows=await db.prepare(`
+      SELECT * FROM items
+      WHERE organization=?
+        AND COALESCE(status,'')!='archived'
+      ORDER BY updated_at DESC
+      LIMIT 25
+    `).bind(candidate.organization).all();
+
+    for(const row of (rows.results||[])){
+      if(!titleSimilarity(row.title,candidate.title)) continue;
+
+      const sameNotificationUrl =
+        sameMonitorUrl(row.notification_url,candidate.notification_url);
+      const sameApplyUrl =
+        sameMonitorUrl(row.apply_url,candidate.apply_url);
+      const sameCanonical =
+        sameMonitorUrl(row.canonical_url,candidate.canonical_url);
+      const sameWindow =
+        normalizeComparable(row.application_start) &&
+        normalizeComparable(candidate.application_start) &&
+        normalizeComparable(row.last_date) &&
+        normalizeComparable(candidate.last_date) &&
+        normalizeComparable(row.application_start)===normalizeComparable(candidate.application_start) &&
+        normalizeComparable(row.last_date)===normalizeComparable(candidate.last_date);
+
+      if(sameNotificationUrl || sameApplyUrl || sameCanonical || sameWindow){
+        existing=row;
+        break;
+      }
+    }
+  }
+
   if(existing) {
-    await recordEvent(db,{itemId:existing.id,sourceId:portalEvidence?.source_id||null,eventType:'portal_google_verified_existing_item',severity:'info',message:'Portal/Google cross-check matched existing item: '+candidate.title,evidence:{verification_stage:'portal_google',google,portals:portalEvidence?.portals||[]}});
+    await recordEvent(db,{itemId:existing.id,sourceId:portalEvidence?.source_id||null,eventType:'portal_google_verified_existing_item',severity:'info',message:'Portal/Google cross-check matched existing item: '+candidate.title,evidence:{verification_stage:'portal_google',google,portals:portalEvidence?.portals||[],cross_source_dedupe:true}});
     return {published:existing.status==='published',existing:true,id:existing.id};
   }
   const clean=portalCandidateForPublicData(candidate);
@@ -1749,7 +1791,7 @@ async function ensureFixedPortalSources(db) {
   `).run();
 
   /*
-    No third portal may silently enter the RT fallback chain.
+    No third portal may silently enter Branch B.
   */
   await db.prepare(`
     UPDATE sources
@@ -1976,11 +2018,9 @@ async function runOfficial(
         JOB/RECRUITMENT URL GATE
         ------------------------
         If an official recruitment candidate
-        is missing notification/apply URL,
-        do NOT publish it yet.
-
-        Immediately ask Portal 1 + Portal 2
-        to recover the missing information.
+        is missing a required URL, do not publish it.
+        Branch A remains independent and sends the item
+        to Admin verification.
       */
       const isRecruitment =
         candidate.type === 'job' ||
@@ -2192,9 +2232,8 @@ export async function runMonitor(
     env.DB;
 
   /*
-    Lock the secondary-source configuration before any fallback
-    decision is made. This keeps Portal 1/2 deterministic across
-    deployments and existing D1 databases.
+    Keep the two secondary sources deterministic across deployments
+    and existing D1 databases. Branch B is independent of Branch A.
   */
   await ensureFixedPortalSources(db);
 
