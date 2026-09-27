@@ -1637,7 +1637,12 @@ Login
 </body>
 </html>`,
     {
-      headers: htmlHeaders
+      headers: {
+        'content-type': 'text/html; charset=UTF-8',
+        'cache-control': 'no-store, no-cache, must-revalidate',
+        'pragma': 'no-cache',
+        'expires': '0'
+      }
     }
   );
 }
