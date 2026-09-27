@@ -223,12 +223,25 @@ function robotsAllowed(url, policy) {
   if (!policy?.groups?.length) return true;
   const group = policy.groups.find(g => g.agents === '*') || null;
   if (!group) return true;
+
+  let target;
+  try {
+    const u = new URL(String(url));
+    target = u.pathname + u.search;
+  } catch {
+    return false;
+  }
+
   let best = null;
   let bestLength = -1;
   for (const rule of group.rules) {
     if (!rule.path) continue;
-    if (String(url).startsWith(rule.path)) {
-      const len = rule.path.length;
+    let path = String(rule.path);
+    try {
+      path = decodeURIComponent(path);
+    } catch {}
+    if (target.startsWith(path)) {
+      const len = path.length;
       if (len > bestLength || (len === bestLength && rule.type === 'allow')) {
         best = rule;
         bestLength = len;
@@ -251,8 +264,15 @@ function sanitizePortalCandidate(candidate) {
   return {
     ...candidate,
     description: null,
+    content: null,
+    article: null,
+    excerpt: null,
     how_to_apply: null,
     important_dates: null,
+    image: null,
+    images: null,
+    logo: null,
+    branding: null,
     authority: 'secondary',
     source_role: 'portal',
     _secondary_only: true,
