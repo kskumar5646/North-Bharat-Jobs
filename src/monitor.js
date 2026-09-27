@@ -1875,16 +1875,6 @@ async async function publishPortalVerifiedCandidate(db,candidate,portalEvidence,
 async async function queuePortalCandidateForVerification(db,env,candidate,portal,now,stats) {
   const key=candidateKey(candidate);
   if(!key){stats.verificationRequired++;return;}
-  const urlReview=portalUrlReview(candidate,portal);
-  if(!urlReview.clean){
-    stats.verificationRequired++;
-    await notify(db,'portal_url_review','Admin verification required: portal URL problem',
-      candidate.title+': portal-provided URL failed the initial security gate. No Google cross-check or publish was performed.',null);
-    await recordEvent(db,{sourceId:portal.id,eventType:'portal_url_initial_gate_failed',severity:'warning',
-      message:'Initial portal URL gate failed: '+candidate.title,evidence:{urlReview}});
-    return;
-  }
-
   const identity=await sha256Hex(portalSecondaryIdentity(candidate));
   const state=await readPortalEvidence(db,identity);
   if(state.updated_at){
