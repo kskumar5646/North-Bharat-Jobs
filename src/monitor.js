@@ -1398,6 +1398,25 @@ async function runIndependentPortalScan(
       }
     );
 
+    /*
+      Portal access restrictions, redirects, robots failures, login pages,
+      CAPTCHA/Cloudflare challenges and rate limits must be visible to Admin.
+      Never retry by bypassing the restriction; the normal circuit/retry
+      controls in sourceFailure remain in charge.
+    */
+    if (error?.portal === true) {
+      await notify(
+        db,
+        'portal_access',
+        'Admin notification: Portal access restricted',
+        portal.name +
+          ': portal scan stopped safely. ' +
+          (error?.message || 'Access restriction detected.') +
+          ' No bypass was attempted.',
+        null
+      );
+    }
+
     return {
       skipped: false,
       discovered: 0,
