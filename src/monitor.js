@@ -54,7 +54,7 @@ const CANDIDATE_LIMIT = 8;
 const PORTAL_LIMIT = 3;
 
 const RETENTION_DELETE_BATCH = 100;
-const PORTAL_SCAN_DAYS = 1;
+const PORTAL_SCAN_DAYS = 1; // Retained for compatibility; portalScanDue now uses fixed IST crawl slots.
 const PORTAL_SEEN_URL_LIMIT = 2000;
 const PORTAL_NEW_CANDIDATE_LIMIT = 8;
 const PORTAL_EVIDENCE_TTL_DAYS = 2;
@@ -1261,14 +1261,42 @@ async function writePortalScanState(db, source, state) {
 }
 
 function portalScanDue(state, now) {
+  /*
+    Portal 1 + Portal 2 crawl window:
+    India time (IST) 04:00 through 22:00.
+    Normal portal crawl slots are twice per hour: :00 and :30.
+    The final slot is exactly 22:00; there is no 22:30 crawl.
+
+    This gate affects ONLY Branch B portal crawling.
+    Existing Branch A scheduling is untouched.
+  */
+  const IST_OFFSET_MS = 330 * 60 * 1000;
+  const local = new Date(now.getTime() + IST_OFFSET_MS);
+  const hour = local.getUTCHours();
+  const minute = local.getUTCMinutes();
+
+  const validSlot =
+    hour >= 4 &&
+    (
+      hour < 22
+        ? (minute === 0 || minute === 30)
+        : hour === 22 && minute === 0
+    );
+
+  if (!validSlot) return false;
   if (!state?.lastScanAt) return true;
 
   const last = new Date(state.lastScanAt);
   if (Number.isNaN(last.getTime())) return true;
 
-  return (
-    now.getTime() - last.getTime()
-    >= PORTAL_SCAN_DAYS * 86_400_000
+  const lastLocal = new Date(last.getTime() + IST_OFFSET_MS);
+
+  return !(
+    lastLocal.getUTCFullYear() === local.getUTCFullYear() &&
+    lastLocal.getUTCMonth() === local.getUTCMonth() &&
+    lastLocal.getUTCDate() === local.getUTCDate() &&
+    lastLocal.getUTCHours() === hour &&
+    lastLocal.getUTCMinutes() === minute
   );
 }
 
