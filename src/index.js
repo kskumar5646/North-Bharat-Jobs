@@ -1700,7 +1700,7 @@ async function handleLogin(
   */
   await ensureAdmin(env);
 
-  const admin =
+  let admin =
     await env.DB
       .prepare(`
         SELECT *
@@ -1709,6 +1709,87 @@ async function handleLogin(
       `)
       .bind(email)
       .first();
+
+  /*
+    Admin recovery/bootstrap:
+    If the submitted credentials exactly match the
+    Cloudflare ADMIN_EMAIL / ADMIN_PASSWORD secrets,
+    allow them to repair an existing admin account too.
+    This fixes the common case where the D1 admin was
+    created with an older email/password.
+  */
+  const configuredEmail =
+    String(env.ADMIN_EMAIL || '')
+      .trim()
+      .toLowerCase();
+  const configuredPassword =
+    String(env.ADMIN_PASSWORD || '');
+
+  const matchesConfiguredCredentials =
+    configuredEmail &&
+    configuredPassword &&
+    email === configuredEmail &&
+    password === configuredPassword;
+
+  if (
+    matchesConfiguredCredentials
+  ) {
+    if (!admin) {
+      admin =
+        await env.DB
+          .prepare(`
+            SELECT *
+            FROM admins
+            ORDER BY id ASC
+            LIMIT 1
+          `)
+          .first();
+    }
+
+    if (admin) {
+      const salt =
+        randomToken().slice(0, 32);
+      const passwordHash =
+        await hashPassword(
+          configuredPassword,
+          salt
+        );
+
+      await env.DB
+        .prepare(`
+          UPDATE admins
+          SET email=?, password_hash=?
+          WHERE id=?
+        `)
+        .bind(
+          configuredEmail,
+          passwordHash,
+          admin.id
+        )
+        .run();
+
+      admin =
+        await env.DB
+          .prepare(`
+            SELECT *
+            FROM admins
+            WHERE id=?
+          `)
+          .bind(admin.id)
+          .first();
+    } else {
+      await ensureAdmin(env);
+      admin =
+        await env.DB
+          .prepare(`
+            SELECT *
+            FROM admins
+            WHERE email=?
+          `)
+          .bind(configuredEmail)
+          .first();
+    }
+  }
 
   if (
     !admin ||
