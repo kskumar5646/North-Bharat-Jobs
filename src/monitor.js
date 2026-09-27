@@ -1577,20 +1577,26 @@ function validatePortalRequiredData(candidate) {
   const required = [
     ['title','title'],
     ['organization','organization'],
-    ['qualification','qualification'],
+    ['advertisement_number','advertisement/notification number'],
+    ['recruitment_edition','recruitment/edition'],
+    ['post','post'],
     ['vacancies','vacancies'],
-    ['age_limit','age_limit'],
+    ['qualification','qualification'],
+    ['eligibility','eligibility'],
+    ['age_limit','age limit'],
+    ['age_relaxation','age relaxation'],
     ['fee','fee'],
-    ['application_start','application_start'],
-    ['last_date','last_date'],
-    ['selection_process','selection_process'],
-    ['salary','salary']
+    ['application_start','application start date'],
+    ['last_date','last date'],
+    ['selection_process','selection process'],
+    ['salary','salary'],
+    ['location','location'],
+    ['how_to_apply','how to apply'],
+    ['important_dates','important dates']
   ];
   const missing = required
     .filter(([field]) => !String(candidate?.[field] ?? '').trim())
     .map(([,label]) => label);
-
-  if (!String(candidate?.last_date || '').trim()) missing.push('last_date');
 
   return {
     clean: missing.length === 0,
