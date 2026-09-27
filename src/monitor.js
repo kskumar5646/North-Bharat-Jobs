@@ -1857,7 +1857,7 @@ async async function publishPortalVerifiedCandidate(db,candidate,portalEvidence,
     application_start:clean.application_start||null,last_date:clean.last_date||null,exam_date:clean.exam_date||null,
     how_to_apply:clean.how_to_apply||null,important_dates:clean.important_dates||null,
     official_url:clean.official_url||null,apply_url:clean.apply_url||null,notification_url:clean.notification_url||null,
-    source_url:null,source_name:null,source_id:null,source_hash:hash,canonical_url:clean.canonical_url||clean.official_url||null,
+    source_url:'internal://branch-b',source_name:'Secondary Cross-check',source_id:null,source_hash:hash,canonical_url:clean.canonical_url||clean.official_url||null,
     status:'published',verification_status:'google_verified',confidence_score:90,
     evidence_json:safeJson({authority:'secondary_crosscheck',verification_stage:'portal1_portal2_google',public_firewall:'passed'}),
     last_verified_at:iso(now),last_seen_at:iso(now),published_at:iso(now)
