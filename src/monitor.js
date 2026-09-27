@@ -1573,6 +1573,24 @@ function portalCandidateForPublicData(candidate) {
   return c;
 }
 
+function normalizePortalCandidateForValidation(candidate) {
+  const c = { ...(candidate || {}) };
+
+  if (!String(c.how_to_apply || '').trim() && String(c.apply_url || '').trim()) {
+    c.how_to_apply = 'Apply through the official application link.';
+  }
+
+  if (!String(c.important_dates || '').trim()) {
+    const dates = [];
+    if (c.application_start) dates.push('Application Start: ' + c.application_start);
+    if (c.last_date) dates.push('Last Date: ' + c.last_date);
+    if (c.exam_date) dates.push('Exam Date: ' + c.exam_date);
+    if (dates.length) c.important_dates = dates.join(' | ');
+  }
+
+  return c;
+}
+
 function validatePortalRequiredData(candidate) {
   const required = [
     ['title','title'],
@@ -1770,7 +1788,8 @@ async function queuePortalCandidateForVerification(db,env,candidate,portal,now,s
   const finalUrlProblems=[];
   for(const field of ['official_url','notification_url','apply_url']){const value=merged[field];if(!value)finalUrlProblems.push({field,reason:'missing'});else if(isPortalOwnedUrl(value,portal))finalUrlProblems.push({field,reason:'secondary_domain_url'});else if(urlHasTrackingSignal(value))finalUrlProblems.push({field,reason:'tracking_or_redirect_signal'});}
   if(finalUrlProblems.length){stats.verificationRequired++;await notify(db,'portal_url_review','Admin verification required: URL problem',candidate.title+': final URL validation failed.',null);await recordEvent(db,{sourceId:portal.id,eventType:'portal_url_validation_failed',severity:'warning',message:'Portal URL validation failed: '+candidate.title,evidence:{problems:finalUrlProblems}});return;}
-  const dataValidation = validatePortalRequiredData(merged);
+  const validationCandidate = normalizePortalCandidateForValidation(merged);
+  const dataValidation = validatePortalRequiredData(validationCandidate);
   if (!dataValidation.clean) {
     stats.verificationRequired++;
     await notify(
@@ -1790,16 +1809,16 @@ async function queuePortalCandidateForVerification(db,env,candidate,portal,now,s
     return;
   }
 
-  const google=await googleCrossCheck(env,merged);
-  const coverage=portalGoogleFieldCoverage(merged,google);
-  const googleUrls=googleUrlCoverage(merged,google);
+  const google=await googleCrossCheck(env,validationCandidate);
+  const coverage=portalGoogleFieldCoverage(validationCandidate,google);
+  const googleUrls=googleUrlCoverage(validationCandidate,google);
   if(google.status!=='confirmed'||google.verified!==true||!coverage.sufficient||!googleUrls.clean){
     stats.verificationRequired++;
     await notify(db,'portal_verification','Admin verification required: Google cross-check failed',candidate.title+': Google cross-check/data/URL confirmation did not pass; automatic publishing is blocked.',null);
     await recordEvent(db,{sourceId:portal.id,eventType:'google_crosscheck_failed',severity:'warning',message:'Google cross-check failed: '+candidate.title,evidence:{google,coverage,google_urls:googleUrls,data_validation:dataValidation,comparison}});
     return;
   }
-  await publishPortalVerifiedCandidate(db,merged,{source_id:portal.id,portals:[portal1.portal_name,portal2.portal_name],comparison},{...google,field_coverage:coverage,url_coverage:googleUrls},now,stats);
+  await publishPortalVerifiedCandidate(db,validationCandidate,{source_id:portal.id,portals:[portal1.portal_name,portal2.portal_name],comparison},{...google,field_coverage:coverage,url_coverage:googleUrls},now,stats);
 }
 /* -------------------------------------------------------------------------- */
 /* Portal source selection                                                    */
