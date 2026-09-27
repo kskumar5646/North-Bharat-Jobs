@@ -28,8 +28,8 @@ import {
 
 // Keep each Cron invocation comfortably below the Workers Free CPU budget.
 const MAX_LINKS = 20;
-const MAX_PAGES = 3;
-const MAX_DEPTH = 1;
+const MAX_PAGES = 6;
+const MAX_DEPTH = 2;
 const MAX_LINKS_PER_PAGE = 8;
 const FETCH_TIMEOUT_MS = 25000;
 
@@ -807,6 +807,7 @@ async function crawlPagesFromSeed(
   source
 ) {
   const pages = [];
+  const linkedCandidates = [];
   const queue = [firstPage];
   const visited = new Set();
 
@@ -833,13 +834,13 @@ async function crawlPagesFromSeed(
 
     page.links = links;
 
-    /* Notification PDFs are not HTML pages, so create candidates from their anchor text. */
-    const linkedCandidates = makeLinkedNotificationCandidates(page, source);
-
-    pages.push(...linkedCandidates.map(candidate => ({
-      ...page,
-      __candidate: candidate
-    })));
+    /* Notification PDFs are candidates, not crawl pages. */
+    linkedCandidates.push(
+      ...makeLinkedNotificationCandidates(
+        page,
+        source
+      )
+    );
 
     if (page.depth >= MAX_DEPTH) {
       continue;
@@ -931,14 +932,11 @@ async function crawlPagesFromSeed(
       pageScore(a, source)
   );
 
-  const candidates = [];
+  const candidates = [
+    ...linkedCandidates
+  ];
 
   for (const page of pages) {
-    if (page.__candidate) {
-      candidates.push(page.__candidate);
-      continue;
-    }
-
     const candidate =
       makeCandidate(
         page,
