@@ -33,6 +33,25 @@ const MAX_DEPTH = 2;
 const MAX_LINKS_PER_PAGE = 8;
 const FETCH_TIMEOUT_MS = 25000;
 
+// Secondary portals are discovery-only. They must never become a source of
+// publishable prose. FreeJobAlert's current Terms expressly prohibit scraping
+// or systematic downloading, so automated crawling is disabled until written
+// permission is available. Sarkari Result is limited to low-volume public GETs
+// and robots.txt compliance; security/access controls are never bypassed.
+const PORTAL_POLICY = {
+  'sarkariresult.com': {
+    enabled: true,
+    maxPages: 3,
+    maxDepth: 1,
+    maxLinksPerPage: 5,
+    mode: 'factual_metadata_only'
+  },
+  'freejobalert.com': {
+    enabled: false,
+    reason: 'automated_crawling_disabled_pending_permission'
+  }
+};
+
 const CURRENT_YEAR = new Date().getUTCFullYear();
 const MIN_ACCEPTABLE_YEAR = CURRENT_YEAR - 1;
 
@@ -133,6 +152,110 @@ const BLOCKED_FILE_PATTERN =
 
 const LOGIN_ONLY_PATTERN =
   /\b(?:login|sign\s*in|candidate\s+login|user\s+login|forgot\s+password|password|username)\b/i;
+
+/* -------------------------------------------------------------------------- */
+/* Portal access/copyright-safety policy                                       */
+
+function portalPolicyFor(source) {
+  if (!isPortalSource(source)) return null;
+  const host = (() => {
+    try { return new URL(source.base_url).hostname.toLowerCase().replace(/^www\\./, ''); }
+    catch { return ''; }
+  })();
+  return PORTAL_POLICY[host] || {
+    enabled: false,
+    reason: 'unknown_portal_policy'
+  };
+}
+
+function assertPortalCrawlAllowed(source) {
+  if (!isPortalSource(source)) return;
+  const policy = portalPolicyFor(source);
+  if (!policy?.enabled) {
+    const error = new Error(
+      source.name + ': automated portal crawling is disabled (' +
+      (policy?.reason || 'policy') + ')'
+    );
+    error.status = 451;
+    error.code = 'portal_automated_crawl_disabled';
+    error.portal = true;
+    throw error;
+  }
+}
+
+async function fetchPortalRobotsPolicy(source) {
+  assertPortalCrawlAllowed(source);
+  const robotsUrl = new URL('/robots.txt', source.base_url).href;
+  const response = await fetchWithTimeout(robotsUrl, source);
+
+  // A missing robots.txt is not itself a prohibition. An access-control
+  // response, however, is a stop condition; do not try alternate endpoints.
+  if (response.status === 404) return { groups: [] };
+  if (!response.ok || !response.body) {
+    const error = new Error(source.name + ': robots.txt could not be read; portal crawl stopped');
+    error.status = Number(response.status || 403);
+    error.code = 'portal_robots_unavailable';
+    error.portal = true;
+    throw error;
+  }
+
+  const groups = [];
+  let current = null;
+  for (const rawLine of String(response.body).split(/\\r?\\n/)) {
+    const line = rawLine.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const m = line.match(/^user-agent\\s*:\\s*(.+)$/i);
+    if (m) {
+      current = { agents: m[1].trim().toLowerCase(), rules: [] };
+      groups.push(current);
+      continue;
+    }
+    if (!current) continue;
+    const d = line.match(/^disallow\\s*:\\s*(.*)$/i);
+    const a = line.match(/^allow\\s*:\\s*(.*)$/i);
+    if (d) current.rules.push({ type: 'disallow', path: d[1].trim() });
+    if (a) current.rules.push({ type: 'allow', path: a[1].trim() });
+  }
+  return { groups };
+}
+
+function robotsAllowed(url, policy) {
+  if (!policy?.groups?.length) return true;
+  const group = policy.groups.find(g => g.agents === '*') || null;
+  if (!group) return true;
+  let best = null;
+  let bestLength = -1;
+  for (const rule of group.rules) {
+    if (!rule.path) continue;
+    if (String(url).startsWith(rule.path)) {
+      const len = rule.path.length;
+      if (len > bestLength || (len === bestLength && rule.type === 'allow')) {
+        best = rule;
+        bestLength = len;
+      }
+    }
+  }
+  return !best || best.type === 'allow';
+}
+
+function sanitizePortalCandidate(candidate) {
+  // Only short factual metadata may be used as secondary evidence. Do not
+  // republish portal-authored prose, instructions, images, logos, or branding.
+  return {
+    ...candidate,
+    description: null,
+    eligibility: null,
+    qualification: null,
+    selection_process: null,
+    salary: null,
+    how_to_apply: null,
+    important_dates: null,
+    authority: 'secondary',
+    source_role: 'portal',
+    _secondary_only: true,
+    _portal_copyright_safe: true
+  };
+}
 
 /* -------------------------------------------------------------------------- */
 /* Portal no-bypass safety guard                                               */
@@ -518,7 +641,7 @@ function linkPriority(link, pageText = '') {
 /* Crawl validation                                                           */
 /* -------------------------------------------------------------------------- */
 
-function isUsefulCrawlLink(link, source, currentUrl) {
+function isUsefulCrawlLink(link, source, currentUrl, robotsPolicy = null) {
   if (!link?.url) {
     return false;
   }
@@ -536,6 +659,10 @@ function isUsefulCrawlLink(link, source, currentUrl) {
   }
 
   if (sameUrl(link.url, currentUrl)) {
+    return false;
+  }
+
+  if (isPortalSource(source) && !robotsAllowed(link.url, robotsPolicy)) {
     return false;
   }
 
@@ -862,10 +989,12 @@ function makeLinkedNotificationCandidates(page, source) {
 
 async function crawlPagesFromSeed(
   firstPage,
-  source
+  source,
+  robotsPolicy = null
 ) {
   const pages = [];
   const linkedCandidates = [];
+  const portalPolicy = portalPolicyFor(source);
   const queue = [firstPage];
   const visited = new Set();
 
@@ -873,9 +1002,13 @@ async function crawlPagesFromSeed(
     normalizeUrl(firstPage.url)
   );
 
+  const maxPages = isPortalSource(source) ? Number(portalPolicy?.maxPages || 3) : MAX_PAGES;
+  const maxDepth = isPortalSource(source) ? Number(portalPolicy?.maxDepth || 1) : MAX_DEPTH;
+  const maxLinksPerPage = isPortalSource(source) ? Number(portalPolicy?.maxLinksPerPage || 5) : MAX_LINKS_PER_PAGE;
+
   while (
     queue.length &&
-    pages.length < MAX_PAGES
+    pages.length < maxPages
   ) {
     const page = queue.shift();
 
@@ -900,7 +1033,7 @@ async function crawlPagesFromSeed(
       )
     );
 
-    if (page.depth >= MAX_DEPTH) {
+    if (page.depth >= maxDepth) {
       continue;
     }
 
@@ -909,7 +1042,8 @@ async function crawlPagesFromSeed(
         isUsefulCrawlLink(
           link,
           source,
-          page.url
+          page.url,
+          robotsPolicy
         )
       )
       .map(link => ({
@@ -920,7 +1054,7 @@ async function crawlPagesFromSeed(
         )
       }))
       .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_LINKS_PER_PAGE);
+      .slice(0, maxLinksPerPage);
 
     for (const entry of ranked) {
       const link = entry.link;
@@ -942,7 +1076,7 @@ async function crawlPagesFromSeed(
 
       if (
         pages.length + queue.length >=
-        MAX_PAGES
+        maxPages
       ) {
         break;
       }
@@ -950,8 +1084,12 @@ async function crawlPagesFromSeed(
       visited.add(normalized);
 
       try {
+        if (isPortalSource(source) && !robotsAllowed(normalized, robotsPolicy)) {
+          continue;
+        }
+
         const response =
-          await fetchWithTimeout(normalized);
+          await fetchWithTimeout(normalized, source);
 
         if (
           !response.ok ||
@@ -2145,9 +2283,43 @@ export async function discoverFromSource(
 export async function discoverPortal(
   source
 ) {
-  return discoverFromSource(
-    source
+  assertPortalCrawlAllowed(source);
+
+  const robotsPolicy = await fetchPortalRobotsPolicy(source);
+
+  const homepage = normalizeUrl(source.base_url);
+  if (!homepage || !robotsAllowed(homepage, robotsPolicy)) {
+    const error = new Error(source.name + ': robots.txt disallows the portal homepage; crawl stopped');
+    error.status = 403;
+    error.code = 'portal_robots_disallowed';
+    error.portal = true;
+    throw error;
+  }
+
+  const first = await fetchWithTimeout(homepage, source);
+  if (!first.ok || first.isPdf || !first.body) {
+    const error = new Error(source.name + ': portal homepage unavailable');
+    error.status = Number(first.status || 403);
+    error.code = 'portal_homepage_unavailable';
+    error.portal = true;
+    throw error;
+  }
+
+  const firstPage = {
+    url: first.finalUrl || homepage,
+    html: first.body,
+    depth: 0,
+    fallbackTitle: source.name
+  };
+
+  const candidates = await crawlPagesFromSeed(
+    firstPage,
+    source,
+    robotsPolicy
   );
+
+  return deduplicateCandidates(candidates)
+    .map(sanitizePortalCandidate);
 }
 
 
