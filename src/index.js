@@ -1816,8 +1816,8 @@ async function publicItemPage(
           slug=?
           AND status='published'
           AND (
-            published_at IS NULL
-            OR published_at >= datetime('now','-365 day')
+            published_at IS NOT NULL
+            AND published_at >= datetime('now','-365 day')
           )
       `)
       .bind(slug)
