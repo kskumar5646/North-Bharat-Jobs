@@ -579,16 +579,140 @@ async function callCloudflareAnalyzer(env, content) {
   }
 }
 
+const DEFAULT_AI_DAILY_ANALYSIS_LIMIT = 50;
+const DEFAULT_AI_MONTHLY_ANALYSIS_LIMIT = 1000;
+const AI_USAGE_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS ai_usage (
+  period_type TEXT NOT NULL,
+  period_key TEXT NOT NULL,
+  analysis_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(period_type, period_key)
+)`;
+
+function aiLimit(env, name, fallback) {
+  const n = Number(env[name]);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
+
+function utcDayKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function utcMonthKey(date = new Date()) {
+  return date.toISOString().slice(0, 7);
+}
+
+async function ensureAiUsageTable(env) {
+  await env.DB.prepare(AI_USAGE_TABLE_SQL).run();
+}
+
+async function getAiUsage(env) {
+  await ensureAiUsageTable(env);
+  const day = utcDayKey();
+  const month = utcMonthKey();
+  const rows = (await env.DB.prepare(`
+    SELECT period_type, period_key, analysis_count, updated_at
+    FROM ai_usage
+    WHERE (period_type='day' AND period_key=?)
+       OR (period_type='month' AND period_key=?)
+  `).bind(day, month).all()).results || [];
+
+  const out = {day:0, month:0};
+  for (const row of rows) {
+    if (row.period_type === 'day') out.day = Number(row.analysis_count || 0);
+    if (row.period_type === 'month') out.month = Number(row.analysis_count || 0);
+  }
+
+  const dailyLimit = aiLimit(env, 'AI_DAILY_ANALYSIS_LIMIT', DEFAULT_AI_DAILY_ANALYSIS_LIMIT);
+  const monthlyLimit = aiLimit(env, 'AI_MONTHLY_ANALYSIS_LIMIT', DEFAULT_AI_MONTHLY_ANALYSIS_LIMIT);
+
+  return {
+    day,
+    month,
+    daily: {used:out.day, limit:dailyLimit, remaining:Math.max(0,dailyLimit-out.day)},
+    monthly: {used:out.month, limit:monthlyLimit, remaining:Math.max(0,monthlyLimit-out.month)},
+    openaiFallback: String(env.AI_ALLOW_OPENAI_FALLBACK || '').toLowerCase() === 'true'
+  };
+}
+
+async function reserveAiAnalysis(env) {
+  await ensureAiUsageTable(env);
+
+  const day = utcDayKey();
+  const month = utcMonthKey();
+  const dailyLimit = aiLimit(env, 'AI_DAILY_ANALYSIS_LIMIT', DEFAULT_AI_DAILY_ANALYSIS_LIMIT);
+  const monthlyLimit = aiLimit(env, 'AI_MONTHLY_ANALYSIS_LIMIT', DEFAULT_AI_MONTHLY_ANALYSIS_LIMIT);
+
+  const rows = (await env.DB.prepare(`
+    SELECT period_type, period_key, analysis_count
+    FROM ai_usage
+    WHERE (period_type='day' AND period_key=?)
+       OR (period_type='month' AND period_key=?)
+  `).bind(day, month).all()).results || [];
+
+  let dayUsed = 0;
+  let monthUsed = 0;
+  for (const row of rows) {
+    if (row.period_type === 'day') dayUsed = Number(row.analysis_count || 0);
+    if (row.period_type === 'month') monthUsed = Number(row.analysis_count || 0);
+  }
+
+  if (dayUsed >= dailyLimit) {
+    return {ok:false, code:'daily_limit', message:'Daily AI analysis limit reached. Try again after 00:00 UTC.', usage:{
+      daily:{used:dayUsed,limit:dailyLimit,remaining:0},
+      monthly:{used:monthUsed,limit:monthlyLimit,remaining:Math.max(0,monthlyLimit-monthUsed)}
+    }};
+  }
+
+  if (monthUsed >= monthlyLimit) {
+    return {ok:false, code:'monthly_limit', message:'Monthly AI analysis limit reached. Try again next month.', usage:{
+      daily:{used:dayUsed,limit:dailyLimit,remaining:Math.max(0,dailyLimit-dayUsed)},
+      monthly:{used:monthUsed,limit:monthlyLimit,remaining:0}
+    }};
+  }
+
+  await env.DB.batch([
+    env.DB.prepare(`
+      INSERT INTO ai_usage(period_type,period_key,analysis_count,updated_at)
+      VALUES('day',?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(period_type,period_key)
+      DO UPDATE SET analysis_count=analysis_count+1, updated_at=CURRENT_TIMESTAMP
+    `).bind(day, 1),
+    env.DB.prepare(`
+      INSERT INTO ai_usage(period_type,period_key,analysis_count,updated_at)
+      VALUES('month',?,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(period_type,period_key)
+      DO UPDATE SET analysis_count=analysis_count+1, updated_at=CURRENT_TIMESTAMP
+    `).bind(month, 1)
+  ]);
+
+  return {
+    ok:true,
+    usage:{
+      daily:{used:dayUsed+1,limit:dailyLimit,remaining:Math.max(0,dailyLimit-dayUsed-1)},
+      monthly:{used:monthUsed+1,limit:monthlyLimit,remaining:Math.max(0,monthlyLimit-monthUsed-1)}
+    }
+  };
+}
+
 async function callAnalyzer(env, content) {
   const cloudflare = await callCloudflareAnalyzer(env, content);
   if (cloudflare.ok) return {...cloudflare,provider:'cloudflare_workers_ai'};
 
-  const openai = await callOpenAIAnalyzer(env, content);
-  if (openai.ok) return {...openai,provider:'openai_fallback'};
+  const allowOpenAI = String(env.AI_ALLOW_OPENAI_FALLBACK || '').toLowerCase() === 'true';
+  if (allowOpenAI) {
+    const openai = await callOpenAIAnalyzer(env, content);
+    if (openai.ok) return {...openai,provider:'openai_fallback'};
+    return {
+      ok:false,
+      error:'Cloudflare Workers AI failed. OpenAI fallback also failed: '+openai.error
+    };
+  }
 
   return {
     ok:false,
-    error:'No AI analyzer is available. Cloudflare Workers AI: '+cloudflare.error+' OpenAI fallback: '+openai.error
+    error:'Cloudflare Workers AI failed: '+cloudflare.error+' OpenAI fallback is disabled by default to avoid unexpected API charges.'
   };
 }
 
@@ -656,6 +780,11 @@ async function validateAnalyzerUrls(item, inputUrl) {
 }
 
 async function analyzeOfficialNotification(env, sourceUrl) {
+  const budget = await reserveAiAnalysis(env);
+  if (!budget.ok) {
+    return {ok:false,error:budget.message,code:budget.code,usage:budget.usage};
+  }
+
   const inputUrl = publicSafeUrl(sourceUrl);
   if (!inputUrl) return {ok:false,error:'Enter a valid public HTTP/HTTPS official URL.'};
 
