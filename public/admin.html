@@ -44,17 +44,40 @@ button{border:1px solid #ccd5e2;background:#fff;border-radius:9px;padding:9px 12
 let currentItem=null;
 
 async function api(u,o){
-  const r=await fetch(u,o);
-  if(r.status===401){location='/admin/';return null}
-  return r.json();
+  try{
+    const r=await fetch(u,{credentials:'same-origin',...o});
+    if(r.status===401){
+      location.replace('/admin/');
+      return null;
+    }
+    const text=await r.text();
+    let d=null;
+    try{d=text?JSON.parse(text):null}catch(e){}
+    if(!r.ok){
+      return {ok:false,error:(d&&d.error)||('Request failed ('+r.status+')')};
+    }
+    return d;
+  }catch(e){
+    return {ok:false,error:'Network error: '+(e&&e.message||e)};
+  }
 }
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function val(v){return v==null?'':String(v)}
 
 async function boot(){
+  const me=await api('/api/admin/me');
+  if(!me)return;
+  if(me.ok!==true){
+    panel.innerHTML='<h2>Admin session error</h2><p>'+esc(me.error||'Authentication required.')+'</p><button class="primary" onclick="location.reload()">Open Login</button>';
+    return;
+  }
   const d=await api('/api/admin/dashboard');
   if(!d)return;
-  document.getElementById('stats').innerHTML=Object.entries(d.stats).map(([k,v])=>
+  if(d.ok!==true){
+    panel.innerHTML='<h2>Dashboard could not load</h2><p class="muted">'+esc(d.error||'Unknown server error')+'</p><div class="actions"><button onclick="location.reload()">Retry</button><button onclick="logout()">Logout & Login Again</button></div>';
+    return;
+  }
+  document.getElementById('stats').innerHTML=Object.entries(d.stats||{}).map(([k,v])=>
     '<div class="card"><div>'+esc(k.replaceAll('_',' '))+'</div><div class="big">'+esc(v)+'</div></div>'
   ).join('');
   load('verification');
