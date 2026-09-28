@@ -500,7 +500,7 @@ function analyzerPrompt(context) {
 
 async function callOpenAIAnalyzer(env, content) {
   if (!env.OPENAI_API_KEY) {
-    return {ok:false, error:'AI analyzer is not configured. Add the OPENAI_API_KEY Worker secret first.'};
+    return {ok:false, error:'OpenAI fallback is not configured.'};
   }
 
   const model = String(env.OPENAI_MODEL || 'gpt-5-mini').trim();
@@ -522,7 +522,7 @@ async function callOpenAIAnalyzer(env, content) {
   try { data = JSON.parse(raw); } catch {}
 
   if (!response.ok) {
-    return {ok:false,error:data?.error?.message || ('AI request failed ('+response.status+')')};
+    return {ok:false,error:data?.error?.message || ('OpenAI request failed ('+response.status+')')};
   }
 
   const outputText =
@@ -534,10 +534,96 @@ async function callOpenAIAnalyzer(env, content) {
 
   const parsed = extractJsonFromModel(outputText);
   if (!parsed || typeof parsed !== 'object') {
-    return {ok:false,error:'AI returned no valid structured JSON.'};
+    return {ok:false,error:'OpenAI returned no valid structured JSON.'};
   }
 
   return {ok:true,item:normalizeAnalyzerResult(parsed),model};
+}
+
+async function callCloudflareAnalyzer(env, content) {
+  if (!env.AI || typeof env.AI.run !== 'function') {
+    return {ok:false,error:'Cloudflare Workers AI binding is not configured.'};
+  }
+
+  const model = String(env.CF_AI_MODEL || '@cf/google/gemma-4-26b-a4b-it').trim();
+  try {
+    const response = await env.AI.run(model, {
+      messages: [
+        {
+          role:'system',
+          content:'You are a strict official-document extraction engine. Return JSON only. Never invent, guess, infer, or fill missing facts.'
+        },
+        {
+          role:'user',
+          content
+        }
+      ],
+      chat_template_kwargs:{enable_thinking:false}
+    }, {rejectIfBusy:true});
+
+    const outputText =
+      response?.response ||
+      response?.result?.response ||
+      response?.choices?.[0]?.message?.content ||
+      response?.result?.choices?.[0]?.message?.content ||
+      '';
+
+    const parsed = extractJsonFromModel(outputText);
+    if (!parsed || typeof parsed !== 'object') {
+      return {ok:false,error:'Cloudflare AI returned no valid structured JSON.'};
+    }
+
+    return {ok:true,item:normalizeAnalyzerResult(parsed),model};
+  } catch (error) {
+    return {ok:false,error:'Cloudflare AI failed: '+String(error?.message || error)};
+  }
+}
+
+async function callAnalyzer(env, content) {
+  const cloudflare = await callCloudflareAnalyzer(env, content);
+  if (cloudflare.ok) return {...cloudflare,provider:'cloudflare_workers_ai'};
+
+  const openai = await callOpenAIAnalyzer(env, content);
+  if (openai.ok) return {...openai,provider:'openai_fallback'};
+
+  return {
+    ok:false,
+    error:'No AI analyzer is available. Cloudflare Workers AI: '+cloudflare.error+' OpenAI fallback: '+openai.error
+  };
+}
+
+async function convertOfficialPdfToMarkdown(env, url) {
+  if (!env.AI || typeof env.AI.toMarkdown !== 'function') {
+    return {ok:false,error:'Cloudflare document conversion is not configured.'};
+  }
+
+  const response = await fetch(url,{
+    redirect:'follow',
+    headers:{'user-agent':'North-Bharat-Jobs-Admin-Analyzer/1.0'},
+    cache:'no-store'
+  });
+  if (!response.ok) {
+    return {ok:false,error:'Official PDF could not be fetched (HTTP '+response.status+').'};
+  }
+
+  const buffer = await response.arrayBuffer();
+  const name = new URL(url).pathname.split('/').pop() || 'notification.pdf';
+
+  try {
+    const converted = await env.AI.toMarkdown({
+      name,
+      blob:new Blob([buffer],{type:'application/pdf'})
+    });
+    const result = Array.isArray(converted) ? converted[0] : converted;
+    if (result?.format === 'error') {
+      return {ok:false,error:'PDF conversion failed: '+String(result.error || 'unknown conversion error')};
+    }
+    const text = String(result?.data || '').trim();
+    if (!text) return {ok:false,error:'PDF conversion returned no readable text.'};
+    return {ok:true,text:text.slice(0,220000)};
+  } catch (error) {
+    return {ok:false,error:'PDF conversion failed: '+String(error?.message || error)};
+  }
 }
 
 async function validateAnalyzerUrls(item, inputUrl) {
@@ -579,14 +665,11 @@ async function analyzeOfficialNotification(env, sourceUrl) {
   const contentParts = [];
 
   if (looksPdf) {
+    const converted=await convertOfficialPdfToMarkdown(env,inputUrl);
+    if (!converted.ok) return converted;
     contentParts.push({
       type:'input_text',
-      text:analyzerPrompt('The supplied input is this official PDF URL: '+inputUrl+'\nAnalyze the complete PDF. Do not invent missing values.')
-    });
-    contentParts.push({
-      type:'input_file',
-      file_url:inputUrl,
-      filename:input.pathname.split('/').pop() || 'notification.pdf'
+      text:analyzerPrompt('The supplied input is this official PDF URL: '+inputUrl+'\nConverted PDF text/Markdown:\n'+converted.text)
     });
   } else {
     const response = await fetch(inputUrl,{
@@ -602,14 +685,11 @@ async function analyzeOfficialNotification(env, sourceUrl) {
     const contentType=(response.headers.get('content-type')||'').toLowerCase();
 
     if (contentType.includes('application/pdf')) {
+      const converted=await convertOfficialPdfToMarkdown(env,inputUrl);
+      if (!converted.ok) return converted;
       contentParts.push({
         type:'input_text',
-        text:analyzerPrompt('The supplied input is this official PDF URL: '+inputUrl+'\nAnalyze the complete PDF. Do not invent missing values.')
-      });
-      contentParts.push({
-        type:'input_file',
-        file_url:inputUrl,
-        filename:input.pathname.split('/').pop() || 'notification.pdf'
+        text:analyzerPrompt('The supplied input is this official PDF URL: '+inputUrl+'\nConverted PDF text/Markdown:\n'+converted.text)
       });
     } else {
       const html=await response.text();
@@ -628,7 +708,10 @@ async function analyzeOfficialNotification(env, sourceUrl) {
     }
   }
 
-  const first=await callOpenAIAnalyzer(env,contentParts);
+  const first=await callAnalyzer(
+    env,
+    contentParts.map(part => part?.text || '').filter(Boolean).join('\n\n')
+  );
   if (!first.ok) return first;
 
   let item=await validateAnalyzerUrls(first.item,inputUrl);
@@ -646,14 +729,19 @@ async function analyzeOfficialNotification(env, sourceUrl) {
       }];
 
       for (const candidate of pdfCandidates.slice(0,3)) {
-        secondParts.push({
-          type:'input_file',
-          file_url:candidate.url,
-          filename:candidate.url.split('/').pop() || 'notification.pdf'
-        });
+        const converted=await convertOfficialPdfToMarkdown(env,candidate.url);
+        if (converted.ok) {
+          secondParts.push({
+            type:'input_text',
+            text:'PDF '+candidate.url+'\n'+converted.text
+          });
+        }
       }
 
-      const second=await callOpenAIAnalyzer(env,secondParts);
+      const second=await callAnalyzer(
+        env,
+        secondParts.map(part => part?.text || '').filter(Boolean).join('\n\n')
+      );
       if (second.ok) {
         const secondItem=await validateAnalyzerUrls(second.item,inputUrl);
         for (const field of ANALYZER_FIELDS) {
@@ -674,6 +762,7 @@ async function analyzeOfficialNotification(env, sourceUrl) {
       status:'admin_review_required',
       source_url:inputUrl,
       model:first.model,
+      provider:first.provider || 'unknown',
       note:'Extracted from the supplied official source. Admin must review every field before publishing.'
     }
   };
