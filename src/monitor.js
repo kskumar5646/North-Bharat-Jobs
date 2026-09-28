@@ -576,6 +576,50 @@ async function findExistingItem(
     }
   }
 
+  const officialUrl =
+    candidate?.official_url ||
+    null;
+
+  if (officialUrl) {
+    const row =
+      await db
+        .prepare(`
+          SELECT *
+          FROM items
+          WHERE official_url=?
+          ORDER BY id
+          LIMIT 1
+        `)
+        .bind(officialUrl)
+        .first();
+
+    if (row) {
+      return row;
+    }
+  }
+
+  const notificationUrl =
+    candidate?.notification_url ||
+    null;
+
+  if (notificationUrl) {
+    const row =
+      await db
+        .prepare(`
+          SELECT *
+          FROM items
+          WHERE notification_url=?
+          ORDER BY id
+          LIMIT 1
+        `)
+        .bind(notificationUrl)
+        .first();
+
+    if (row) {
+      return row;
+    }
+  }
+
   const sourceUrl =
     candidate?.source_url ||
     null;
