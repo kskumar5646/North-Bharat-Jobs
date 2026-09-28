@@ -345,7 +345,7 @@ async function ensureAdmin(env) {
 /*
   Public jobs list
 */
-async async function publicList(env,url) {
+async function publicList(env,url) {
   const type=url.searchParams.get('type');
   const q=(url.searchParams.get('q')||'').trim();
   const requestedPage=Number(url.searchParams.get('page')||1);
@@ -381,7 +381,7 @@ async async function publicList(env,url) {
 /*
   Public item
 */
-async async function publicItem(env,slug) {
+async function publicItem(env,slug) {
   const item=await env.DB.prepare(`
     SELECT id,slug,type,title,organization,category,location,description,eligibility,qualification,
            vacancies,age_limit,age_relaxation,fee,selection_process,salary,application_start,last_date,
