@@ -19,5 +19,6 @@
   "triggers": {
     "crons": ["*/5 * * * *", "17 2 * * *"]
   },
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  "ai": { "binding": "AI" }
 }
