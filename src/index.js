@@ -503,7 +503,7 @@ async function callOpenAIAnalyzer(env, content) {
     return {ok:false, error:'AI analyzer is not configured. Add the OPENAI_API_KEY Worker secret first.'};
   }
 
-  const model = String(env.OPENAI_MODEL || 'gpt-5.6-luna').trim();
+  const model = String(env.OPENAI_MODEL || 'gpt-5-mini').trim();
   const response = await fetch('https://api.openai.com/v1/responses', {
     method:'POST',
     headers:{
