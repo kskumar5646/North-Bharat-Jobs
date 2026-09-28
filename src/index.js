@@ -399,6 +399,286 @@ async function publicItem(env,slug) {
   return json({ok:true,item});
 }
 
+
+/*
+  Admin notification analyzer.
+  Results are always returned for Admin review; this endpoint never publishes.
+*/
+const ANALYZER_FIELDS = [
+  'type','title','organization','category','location','description',
+  'eligibility','qualification','vacancies','age_limit','age_relaxation',
+  'fee','selection_process','salary','application_start','last_date',
+  'exam_date','how_to_apply','important_dates','official_url',
+  'notification_url','apply_url','canonical_url'
+];
+
+function analyzerText(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function stripHtmlForAnalyzer(html) {
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180000);
+}
+
+function extractLinksForAnalyzer(html, baseUrl) {
+  const links = [];
+  const re = /<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(String(html || ''))) {
+    try {
+      const href = new URL(m[1], baseUrl).toString();
+      if (!/^https?:$/i.test(new URL(href).protocol)) continue;
+      links.push({url: href, label: stripHtmlForAnalyzer(m[2]).slice(0, 300)});
+    } catch {}
+    if (links.length >= 250) break;
+  }
+  return links;
+}
+
+function extractJsonFromModel(value) {
+  const raw = String(value || '').trim();
+  try { return JSON.parse(raw); } catch {}
+  const fenced = raw.match(/\`\`\`(?:json)?\s*([\s\S]*?)\s*\`\`\`/i);
+  if (fenced) { try { return JSON.parse(fenced[1]); } catch {} }
+  const first = raw.indexOf('{');
+  const last = raw.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    try { return JSON.parse(raw.slice(first, last + 1)); } catch {}
+  }
+  return null;
+}
+
+function normalizeAnalyzerResult(value) {
+  const out = {};
+  for (const field of ANALYZER_FIELDS) {
+    const v = value?.[field];
+    out[field] = v === null || v === undefined ? '' : String(v).trim();
+  }
+  if (!out.type) out.type = 'job';
+  if (!out.category) out.category = 'Latest Jobs';
+  return out;
+}
+
+function analyzerPrompt(context) {
+  return [
+    'You are the official-document extraction engine for North Bharat Jobs.',
+    'Extract structured recruitment/admission/update data ONLY from the supplied official source.',
+    '',
+    'CRITICAL RULES:',
+    '- Never invent, guess, infer, or complete a missing fact.',
+    '- If a field is not explicitly supported by the source, return an empty string.',
+    '- Preserve exact dates, vacancy counts, fees, qualifications, age limits and salary as stated.',
+    '- How to Apply must summarize the source actual application instructions.',
+    '- URLs must be copied exactly from the source when available. Never construct a URL from a guess.',
+    '- Notification PDF URL must be an actual PDF URL.',
+    '- Apply URL must be a real application page, not the PDF.',
+    '- If the supplied source is itself a PDF, use it as notification_url unless the document clearly identifies a different official notification PDF.',
+    '- This result is for ADMIN REVIEW. Do not claim independent verification.',
+    '- Return JSON only. No markdown and no commentary.',
+    '',
+    'Return exactly these keys:',
+    ANALYZER_FIELDS.join(','),
+    '',
+    'SOURCE CONTEXT:',
+    context
+  ].join('\n');
+}
+
+async function callOpenAIAnalyzer(env, content) {
+  if (!env.OPENAI_API_KEY) {
+    return {ok:false, error:'AI analyzer is not configured. Add the OPENAI_API_KEY Worker secret first.'};
+  }
+
+  const model = String(env.OPENAI_MODEL || 'gpt-5.6-luna').trim();
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method:'POST',
+    headers:{
+      authorization:'Bearer '+env.OPENAI_API_KEY,
+      'content-type':'application/json'
+    },
+    body:JSON.stringify({
+      model,
+      input:[{role:'user',content}],
+      max_output_tokens:6000
+    })
+  });
+
+  const raw = await response.text();
+  let data = null;
+  try { data = JSON.parse(raw); } catch {}
+
+  if (!response.ok) {
+    return {ok:false,error:data?.error?.message || ('AI request failed ('+response.status+')')};
+  }
+
+  const outputText =
+    data?.output_text ||
+    (data?.output || [])
+      .flatMap(item => item?.content || [])
+      .map(item => item?.text || '')
+      .join(' ');
+
+  const parsed = extractJsonFromModel(outputText);
+  if (!parsed || typeof parsed !== 'object') {
+    return {ok:false,error:'AI returned no valid structured JSON.'};
+  }
+
+  return {ok:true,item:normalizeAnalyzerResult(parsed),model};
+}
+
+async function validateAnalyzerUrls(item, inputUrl) {
+  const result = {...item};
+  for (const field of ['official_url','notification_url','apply_url','canonical_url']) {
+    const raw = analyzerText(result[field]);
+    if (!raw) continue;
+    const safe = publicSafeUrl(raw);
+    if (!safe) { result[field]=''; continue; }
+
+    try {
+      const u = new URL(safe);
+      const input = new URL(inputUrl);
+      const sameOfficialHost =
+        u.hostname.toLowerCase().replace(/^www\./,'') ===
+        input.hostname.toLowerCase().replace(/^www\./,'');
+      if (!sameOfficialHost) { result[field]=''; continue; }
+
+      if (field==='notification_url' && !/\.pdf(?:$|[?#])/i.test(u.pathname+u.search)) {
+        result[field]='';
+      }
+      if (field==='apply_url' && /\.pdf(?:$|[?#])/i.test(u.pathname+u.search)) {
+        result[field]='';
+      }
+    } catch {
+      result[field]='';
+    }
+  }
+  return result;
+}
+
+async function analyzeOfficialNotification(env, sourceUrl) {
+  const inputUrl = publicSafeUrl(sourceUrl);
+  if (!inputUrl) return {ok:false,error:'Enter a valid public HTTP/HTTPS official URL.'};
+
+  const input = new URL(inputUrl);
+  const looksPdf = /\.pdf(?:$|[?#])/i.test(input.pathname+input.search);
+  let links = [];
+  const contentParts = [];
+
+  if (looksPdf) {
+    contentParts.push({
+      type:'input_text',
+      text:analyzerPrompt('The supplied input is this official PDF URL: '+inputUrl+'\nAnalyze the complete PDF. Do not invent missing values.')
+    });
+    contentParts.push({
+      type:'input_file',
+      file_url:inputUrl,
+      filename:input.pathname.split('/').pop() || 'notification.pdf'
+    });
+  } else {
+    const response = await fetch(inputUrl,{
+      redirect:'follow',
+      headers:{'user-agent':'North-Bharat-Jobs-Admin-Analyzer/1.0'},
+      cache:'no-store'
+    });
+
+    if (!response.ok) {
+      return {ok:false,error:'Official URL could not be fetched (HTTP '+response.status+').'};
+    }
+
+    const contentType=(response.headers.get('content-type')||'').toLowerCase();
+
+    if (contentType.includes('application/pdf')) {
+      contentParts.push({
+        type:'input_text',
+        text:analyzerPrompt('The supplied input is this official PDF URL: '+inputUrl+'\nAnalyze the complete PDF. Do not invent missing values.')
+      });
+      contentParts.push({
+        type:'input_file',
+        file_url:inputUrl,
+        filename:input.pathname.split('/').pop() || 'notification.pdf'
+      });
+    } else {
+      const html=await response.text();
+      const pageText=stripHtmlForAnalyzer(html);
+      links=extractLinksForAnalyzer(html,inputUrl);
+      const linkText=links.map((x,i)=>(i+1)+'. '+x.label+' -> '+x.url).join('\n');
+
+      contentParts.push({
+        type:'input_text',
+        text:analyzerPrompt(
+          'Official source URL: '+inputUrl+
+          '\n\nPAGE TEXT:\n'+pageText+
+          '\n\nLINKS FOUND ON THE OFFICIAL PAGE:\n'+linkText
+        )
+      });
+    }
+  }
+
+  const first=await callOpenAIAnalyzer(env,contentParts);
+  if (!first.ok) return first;
+
+  let item=await validateAnalyzerUrls(first.item,inputUrl);
+
+  if (!looksPdf && !item.notification_url) {
+    const pdfCandidates=links.filter(x=>/\.pdf(?:$|[?#])/i.test(x.url)).slice(0,8);
+    if (pdfCandidates.length) {
+      const pdfHint=pdfCandidates.map((x,i)=>(i+1)+'. '+x.label+' -> '+x.url).join('\n');
+      const secondParts=[{
+        type:'input_text',
+        text:analyzerPrompt(
+          'Official recruitment webpage: '+inputUrl+
+          '\nThe PDF links below are official candidates. Identify the correct recruitment notification PDF and extract the full structured data from the supplied PDF.\nPDF CANDIDATES:\n'+pdfHint
+        )
+      }];
+
+      for (const candidate of pdfCandidates.slice(0,3)) {
+        secondParts.push({
+          type:'input_file',
+          file_url:candidate.url,
+          filename:candidate.url.split('/').pop() || 'notification.pdf'
+        });
+      }
+
+      const second=await callOpenAIAnalyzer(env,secondParts);
+      if (second.ok) {
+        const secondItem=await validateAnalyzerUrls(second.item,inputUrl);
+        for (const field of ANALYZER_FIELDS) {
+          if (analyzerText(secondItem[field])) item[field]=secondItem[field];
+        }
+      }
+    }
+  }
+
+  if (!item.official_url) item.official_url=inputUrl;
+  if (!item.canonical_url) item.canonical_url=item.official_url;
+  if (looksPdf && !item.notification_url) item.notification_url=inputUrl;
+
+  return {
+    ok:true,
+    item,
+    analysis:{
+      status:'admin_review_required',
+      source_url:inputUrl,
+      model:first.model,
+      note:'Extracted from the supplied official source. Admin must review every field before publishing.'
+    }
+  };
+}
+
 /*
   Admin dashboard
 */
@@ -664,6 +944,35 @@ async function adminApi(
       ok: true,
       ...result
     });
+  }
+
+  /*
+    Analyze an official notification before creating a job.
+  */
+  if (
+    path === '/api/admin/item/analyze' &&
+    request.method === 'POST'
+  ) {
+    const body=await safeJson(request);
+    const sourceUrl=String(body?.url || '').trim();
+
+    try {
+      const result=await analyzeOfficialNotification(env,sourceUrl);
+      await audit(env,admin.id,'analyze_notification','item',null,{
+        source_url:publicSafeUrl(sourceUrl),
+        ok:result.ok===true
+      });
+      return json(result,result.ok?200:400);
+    } catch(error) {
+      await audit(env,admin.id,'analyze_notification_error','item',null,{
+        source_url:publicSafeUrl(sourceUrl),
+        error:String(error?.message || error)
+      });
+      return json({
+        ok:false,
+        error:'Notification analysis failed: '+String(error?.message || error)
+      },500);
+    }
   }
 
   /*
