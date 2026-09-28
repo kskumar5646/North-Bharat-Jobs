@@ -168,7 +168,7 @@ const LOGIN_ONLY_PATTERN =
 function portalPolicyFor(source) {
   if (!isPortalSource(source)) return null;
   const host = (() => {
-    try { return new URL(source.base_url).hostname.toLowerCase().replace(/^www\\./, ''); }
+    try { return new URL(source.base_url).hostname.toLowerCase().replace(/^www\./, ''); }
     catch { return ''; }
   })();
   return PORTAL_POLICY[host] || {
