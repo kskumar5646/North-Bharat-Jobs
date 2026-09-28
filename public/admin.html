@@ -129,10 +129,54 @@ const fields=[
  ['source_name','Source Name'],['canonical_url','Canonical URL']
 ];
 
+async function analyzeNotification(){
+  const input=document.getElementById('analyze_url');
+  const status=document.getElementById('analyze_status');
+  const url=(input&&input.value||'').trim();
+  if(!url){ status.textContent='Official URL डालें।'; return; }
+
+  status.textContent='Official source fetch और full document analysis चल रहा है…';
+  const d=await api('/api/admin/item/analyze',{
+    method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({url})
+  });
+
+  if(!d){
+    status.textContent='Analysis request failed.';
+    return;
+  }
+
+  if(d.ok!==true){
+    status.textContent=d.error||'Analysis failed.';
+    return;
+  }
+
+  const item=d.item||{};
+  for(const [k] of fields){
+    const el=document.getElementById('f_'+k);
+    if(el && item[k]!==undefined && item[k]!==null) el.value=String(item[k]);
+  }
+
+  status.textContent='Analysis complete. नीचे सभी fields को Admin review करें। Publish करने से पहले URLs और dates verify करें।';
+  window.scrollTo({top:document.getElementById('panel').offsetTop,behavior:'smooth'});
+}
+
 function createItem(){
   currentItem=null;
   const blank={title:'',organization:'',type:'job',category:'Latest Jobs',location:'',description:'',eligibility:'',qualification:'',vacancies:'',age_limit:'',age_relaxation:'',fee:'',selection_process:'',salary:'',application_start:'',last_date:'',exam_date:'',how_to_apply:'',important_dates:'',official_url:'',notification_url:'',apply_url:'',canonical_url:''};
-  panel.innerHTML='<h2>Create a New Job</h2><p class="muted">Admin-created job. Fill official details only. Notification PDF, official website and apply URL must be real public URLs.</p>'+
+  panel.innerHTML='<h2>Create a New Job</h2>
+<p class="muted">पहले official notification page या PDF URL डालें। System पूरे official document को analyze करके नीचे के fields भर देगा। Publish करने से पहले Admin review जरूरी है।</p>
+<div class="panel" style="margin:12px 0;background:#f8fafc">
+  <label style="font-size:12px;font-weight:700">Official Notification / Recruitment URL
+    <input id="analyze_url" placeholder="https://official-site.gov.in/.../notification.pdf" style="width:100%;box-sizing:border-box;padding:11px;border:1px solid #ccd5e2;border-radius:8px;margin-top:5px">
+  </label>
+  <div class="actions">
+    <button class="primary" onclick="analyzeNotification()">🔍 Fetch & Analyze Official Notification</button>
+    <span id="analyze_status" class="muted"></span>
+  </div>
+</div>
+<p class="muted">Analysis केवल source में मौजूद facts निकालेगा; missing information खाली रहेगी।</p>'+
     '<div class="editor">'+fields.map(([k,l])=>'<label>'+esc(l)+(k==='description'||k==='eligibility'||k==='qualification'||k==='selection_process'||k==='how_to_apply'||k==='important_dates'?'<textarea id="f_'+k+'">'+esc(blank[k])+'</textarea>':'<input id="f_'+k+'" value="'+esc(blank[k])+'">')+'</label>').join('')+
     '</div><div class="actions"><button class="primary" onclick="saveNewJob(false)">Save for Verification</button><button onclick="saveNewJob(true)">Create & Publish</button><button onclick="load(&quot;verification&quot;)">Cancel</button></div>';
 }
