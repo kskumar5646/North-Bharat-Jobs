@@ -403,65 +403,46 @@ async function publicItem(env,slug) {
   Admin dashboard
 */
 async function adminDashboard(env) {
-  const queries =
-    await Promise.all([
-      env.DB
-        .prepare(`
-          SELECT COUNT(*) c
-          FROM items
-          WHERE status='published'
-        `)
-        .first(),
+  /*
+    Keep the dashboard deliberately resilient. The Admin Portal must
+    still render even when an optional/older D1 table is unavailable.
+  */
+  const count = async (sql) => {
+    try {
+      const row = await env.DB.prepare(sql).first();
+      return Number(row?.c || 0);
+    } catch {
+      return 0;
+    }
+  };
 
-      env.DB
-        .prepare(`
-          SELECT COUNT(*) c
-          FROM items
-          WHERE status='verification_required'
-        `)
-        .first(),
+  const published = await count(
+    "SELECT COUNT(*) c FROM items WHERE status='published'"
+  );
 
-      env.DB
-        .prepare(`
-          SELECT COUNT(*) c
-          FROM sources
-          WHERE
-            enabled=1
-            AND last_error IS NOT NULL
-        `)
-        .first(),
+  const verificationRequired = await count(
+    "SELECT COUNT(*) c FROM items WHERE status='verification_required'"
+  );
 
-      env.DB
-        .prepare(`
-          SELECT COUNT(*) c
-          FROM notifications
-          WHERE read_at IS NULL
-        `)
-        .first()
-    ]);
+  const sourceErrors = await count(
+    "SELECT COUNT(*) c FROM sources WHERE enabled=1 AND last_error IS NOT NULL"
+  );
+
+  /*
+    Notifications are optional in some existing D1 installations.
+    Do not let a missing notifications table break the whole dashboard.
+  */
+  const unreadNotifications = await count(
+    "SELECT COUNT(*) c FROM notifications WHERE read_at IS NULL"
+  );
 
   return json({
     ok: true,
     stats: {
-      published:
-        Number(
-          queries[0]?.c || 0
-        ),
-
-      verification_required:
-        Number(
-          queries[1]?.c || 0
-        ),
-
-      source_errors:
-        Number(
-          queries[2]?.c || 0
-        ),
-
-      unread_notifications:
-        Number(
-          queries[3]?.c || 0
-        )
+      published,
+      verification_required: verificationRequired,
+      source_errors: sourceErrors,
+      unread_notifications: unreadNotifications
     }
   });
 }
