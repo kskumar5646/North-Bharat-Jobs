@@ -27,7 +27,7 @@ button{border:1px solid #ccd5e2;background:#fff;border-radius:9px;padding:9px 12
 <button onclick="logout()">Logout</button>
 </header>
 <main>
-<div class="grid" id="stats"></div>
+<div class="grid" id="stats"></div><div class="panel" id="ai_usage" style="margin-top:10px;background:#f8fafc"><strong>AI Analyzer Usage</strong> <span id="ai_usage_text" class="muted">Loading limits…</span></div>
 <div class="tabs">
 <button class="primary" onclick="createItem()">+ Create a New Job</button><button onclick="load('verification')">Verification Required</button>
 <button onclick="load('published')">Published</button>
@@ -84,7 +84,17 @@ async function boot(){
   document.getElementById('stats').innerHTML=Object.entries(d.stats||{}).map(([k,v])=>
     '<div class="card"><div>'+esc(k.replaceAll('_',' '))+'</div><div class="big">'+esc(v)+'</div></div>'
   ).join('');
+  loadAiUsage();
   load('verification');
+}
+
+async function loadAiUsage(){
+  const d=await api('/api/admin/ai-usage');
+  const el=document.getElementById('ai_usage_text');
+  if(!el)return;
+  if(!d||d.ok!==true){el.textContent='Usage status unavailable.';return;}
+  const u=d.usage;
+  el.innerHTML=' — Today: <b>'+esc(u.daily.used)+' / '+esc(u.daily.limit)+'</b> ('+esc(u.daily.remaining)+' remaining) · This month: <b>'+esc(u.monthly.used)+' / '+esc(u.monthly.limit)+'</b> ('+esc(u.monthly.remaining)+' remaining)'+(u.openaiFallback?' · OpenAI fallback: enabled':' · OpenAI fallback: disabled (no unexpected API charges)');
 }
 
 async function load(kind){
