@@ -979,6 +979,18 @@ async function adminApi(
 
   if (
     path ===
+    '/api/admin/ai-usage'
+  ) {
+    try {
+      const usage = await getAiUsage(env);
+      return json({ok:true,usage});
+    } catch (error) {
+      return json({ok:false,error:'AI usage status unavailable: '+String(error?.message || error)},500);
+    }
+  }
+
+  if (
+    path ===
     '/api/admin/sources'
   ) {
     const rows =
