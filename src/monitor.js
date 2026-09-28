@@ -1476,7 +1476,7 @@ function urlHasTrackingSignal(value) {
   if (!raw) return false;
   try {
     const url = new URL(raw);
-    const host = url.hostname.toLowerCase().replace(/^www\\./,'');
+    const host = url.hostname.toLowerCase().replace(/^www\./,'');
     const keys = [...url.searchParams.keys()].map(k => k.toLowerCase());
     const trackingKeys = new Set([
       'utm_source','utm_medium','utm_campaign','utm_term','utm_content',
@@ -1565,11 +1565,11 @@ async function inspectUrlChain(value, field) {
     const final=normalizePublicUrl(current);
     const contentType=(response.headers.get('content-type')||'').toLowerCase();
     if(!final || urlHasTrackingSignal(final)){problems.push({field,reason:'TRACKING_URL'});return {clean:false,url:null,chain,problems};}
-    if(field==='notification_url' && contentType && !/(pdf|octet-stream)/i.test(contentType) && !/\\.pdf(?:$|[?#])/i.test(new URL(final).pathname)){
+    if(field==='notification_url' && contentType && !/(pdf|octet-stream)/i.test(contentType) && !/\.pdf(?:$|[?#])/i.test(new URL(final).pathname)){
       problems.push({field,reason:'INVALID_NOTIFICATION_URL',content_type:contentType});
       return {clean:false,url:null,chain,problems};
     }
-    if(field==='apply_url' && /(application\\/pdf|text\\/pdf)/i.test(contentType)){
+    if(field==='apply_url' && /(application\/pdf|text\/pdf)/i.test(contentType)){
       problems.push({field,reason:'INVALID_APPLY_URL'});
       return {clean:false,url:null,chain,problems};
     }
@@ -1581,8 +1581,8 @@ async function inspectUrlChain(value, field) {
 
 function hostFamily(a,b) {
   try {
-    const ah=new URL(a).hostname.toLowerCase().replace(/^www\\./,'');
-    const bh=new URL(b).hostname.toLowerCase().replace(/^www\\./,'');
+    const ah=new URL(a).hostname.toLowerCase().replace(/^www\./,'');
+    const bh=new URL(b).hostname.toLowerCase().replace(/^www\./,'');
     return ah===bh || ah.endsWith('.'+bh) || bh.endsWith('.'+ah);
   } catch { return false; }
 }
