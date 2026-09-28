@@ -165,7 +165,7 @@ async function analyzeNotification(){
 function createItem(){
   currentItem=null;
   const blank={title:'',organization:'',type:'job',category:'Latest Jobs',location:'',description:'',eligibility:'',qualification:'',vacancies:'',age_limit:'',age_relaxation:'',fee:'',selection_process:'',salary:'',application_start:'',last_date:'',exam_date:'',how_to_apply:'',important_dates:'',official_url:'',notification_url:'',apply_url:'',canonical_url:''};
-  panel.innerHTML='<h2>Create a New Job</h2>
+    panel.innerHTML=`<h2>Create a New Job</h2>
 <p class="muted">पहले official notification page या PDF URL डालें। System पूरे official document को analyze करके नीचे के fields भर देगा। Publish करने से पहले Admin review जरूरी है।</p>
 <div class="panel" style="margin:12px 0;background:#f8fafc">
   <label style="font-size:12px;font-weight:700">Official Notification / Recruitment URL
@@ -176,10 +176,10 @@ function createItem(){
     <span id="analyze_status" class="muted"></span>
   </div>
 </div>
-<p class="muted">Analysis केवल source में मौजूद facts निकालेगा; missing information खाली रहेगी।</p>'+
-    '<div class="editor">'+fields.map(([k,l])=>'<label>'+esc(l)+(k==='description'||k==='eligibility'||k==='qualification'||k==='selection_process'||k==='how_to_apply'||k==='important_dates'?'<textarea id="f_'+k+'">'+esc(blank[k])+'</textarea>':'<input id="f_'+k+'" value="'+esc(blank[k])+'">')+'</label>').join('')+
-    '</div><div class="actions"><button class="primary" onclick="saveNewJob(false)">Save for Verification</button><button onclick="saveNewJob(true)">Create & Publish</button><button onclick="load(&quot;verification&quot;)">Cancel</button></div>';
-}
+<p class="muted">Analysis केवल source में मौजूद facts निकालेगा; missing information खाली रहेगी।</p>
+<div class="editor">`+
+    fields.map(([k,l])=>'<label>'+esc(l)+(k==='description'||k==='eligibility'||k==='qualification'||k==='selection_process'||k==='how_to_apply'||k==='important_dates'?'<textarea id="f_'+k+'">'+esc(blank[k])+'</textarea>':'<input id="f_'+k+'" value="'+esc(blank[k])+'">')+'</label>').join('')+
+`</div><div class="actions"><button class="primary" onclick="saveNewJob(false)">Save for Verification</button><button onclick="saveNewJob(true)">Create & Publish</button><button onclick="load('verification')">Cancel</button></div>`;
 async function saveNewJob(publish){
   const body={publish};
   fields.forEach(([k])=>{body[k]=document.getElementById('f_'+k).value});
