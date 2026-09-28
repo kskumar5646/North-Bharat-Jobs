@@ -29,7 +29,7 @@ button{border:1px solid #ccd5e2;background:#fff;border-radius:9px;padding:9px 12
 <main>
 <div class="grid" id="stats"></div>
 <div class="tabs">
-<button onclick="load('verification')">Verification Required</button>
+<button class="primary" onclick="createItem()">+ Create a New Job</button><button onclick="load('verification')">Verification Required</button>
 <button onclick="load('published')">Published</button>
 <button onclick="load('sources')">Sources</button>
 <button onclick="load('runs')">Monitor Runs</button>
@@ -97,6 +97,21 @@ const fields=[
  ['source_name','Source Name'],['canonical_url','Canonical URL']
 ];
 
+function createItem(){
+  currentItem=null;
+  const blank={title:'',organization:'',type:'job',category:'Latest Jobs',location:'',description:'',eligibility:'',qualification:'',vacancies:'',age_limit:'',age_relaxation:'',fee:'',selection_process:'',salary:'',application_start:'',last_date:'',exam_date:'',how_to_apply:'',important_dates:'',official_url:'',notification_url:'',apply_url:'',canonical_url:''};
+  panel.innerHTML='<h2>Create a New Job</h2><p class="muted">Admin-created job. Fill official details only. Notification PDF, official website and apply URL must be real public URLs.</p>'+
+    '<div class="editor">'+fields.map(([k,l])=>'<label>'+esc(l)+(k==='description'||k==='eligibility'||k==='qualification'||k==='selection_process'||k==='how_to_apply'||k==='important_dates'?'<textarea id="f_'+k+'">'+esc(blank[k])+'</textarea>':'<input id="f_'+k+'" value="'+esc(blank[k])+'">')+'</label>').join('')+
+    '</div><div class="actions"><button class="primary" onclick="saveNewJob(false)">Save for Verification</button><button onclick="saveNewJob(true)">Create & Publish</button><button onclick="load('verification')">Cancel</button></div>';
+}
+async function saveNewJob(publish){
+  const body={publish};
+  fields.forEach(([k])=>{body[k]=document.getElementById('f_'+k).value});
+  const d=await api('/api/admin/item/create',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  if(!d)return;
+  alert(d.ok?'Job created #'+d.id+(publish?' and published.':' for verification.'):(d.error||'Create failed'));
+  if(d.ok)load(publish?'published':'verification');
+}
 async function editItem(id){
   const d=await api('/api/admin/item/preview?id='+id); if(!d)return;
   currentItem=d.item;
