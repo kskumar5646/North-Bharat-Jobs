@@ -686,6 +686,178 @@ async function adminApi(
   }
 
   /*
+    Create a new job manually from Admin Portal.
+    Manual records are clearly marked as admin-created and still pass
+    the same public URL safety checks before they can be published.
+  */
+  if (
+    path === '/api/admin/item/create' &&
+    request.method === 'POST'
+  ) {
+    const body = await safeJson(request);
+
+    const fields = [
+      'type','title','organization','category','location',
+      'description','eligibility','qualification','vacancies',
+      'age_limit','age_relaxation','fee','selection_process',
+      'salary','application_start','last_date','exam_date',
+      'how_to_apply','important_dates','official_url',
+      'apply_url','notification_url','canonical_url'
+    ];
+
+    const data = {};
+    for (const field of fields) {
+      data[field] =
+        body[field] === null || body[field] === undefined
+          ? ''
+          : String(body[field]).trim();
+    }
+
+    if (!data.title) {
+      return json({ ok:false, error:'Title cannot be empty' }, 400);
+    }
+
+    if (!data.type) data.type = 'job';
+    if (!data.category) data.category = 'Latest Jobs';
+
+    if (!data.official_url) {
+      return json({ ok:false, error:'Official Website URL is required' }, 400);
+    }
+    if (!data.notification_url) {
+      return json({ ok:false, error:'Notification PDF URL is required' }, 400);
+    }
+    if (!data.apply_url) {
+      return json({ ok:false, error:'Apply Online URL is required' }, 400);
+    }
+
+    for (const field of ['official_url','notification_url','apply_url']) {
+      if (hasPublicUrlTracking(data[field])) {
+        return json({
+          ok:false,
+          error:'Tracking/redirect URL is not allowed in '+field
+        }, 400);
+      }
+    }
+
+    if (!data.canonical_url) data.canonical_url = data.official_url;
+
+    const duplicate = await env.DB.prepare(`
+      SELECT id,title,status
+      FROM items
+      WHERE
+        (canonical_url IS NOT NULL AND canonical_url=?)
+        OR (notification_url IS NOT NULL AND notification_url=?)
+        OR (
+          lower(trim(title))=lower(trim(?))
+          AND lower(trim(COALESCE(organization,'')))=lower(trim(?))
+        )
+      ORDER BY id DESC
+      LIMIT 1
+    `).bind(
+      data.canonical_url,
+      data.notification_url,
+      data.title,
+      data.organization
+    ).first();
+
+    if (duplicate) {
+      return json({
+        ok:false,
+        error:'A matching job already exists (#'+duplicate.id+'): '+duplicate.title,
+        duplicate_id:duplicate.id
+      }, 409);
+    }
+
+    const baseSlug = data.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g,'-')
+      .replace(/^-+|-+$/g,'')
+      .slice(0,120) || 'job';
+
+    let slug = baseSlug;
+    for (let n=2; n<=1000; n++) {
+      const exists = await env.DB
+        .prepare('SELECT id FROM items WHERE slug=? LIMIT 1')
+        .bind(slug)
+        .first();
+      if (!exists) break;
+      slug = baseSlug+'-'+n;
+    }
+
+    const status = body.publish === true ? 'published' : 'verification_required';
+    const verificationStatus = body.publish === true
+      ? 'admin_verified'
+      : 'admin_created';
+
+    const publishedAt = body.publish === true ? nowIso() : null;
+
+    const result = await env.DB.prepare(`
+      INSERT INTO items(
+        slug,notification_key,type,title,organization,category,location,
+        description,eligibility,qualification,vacancies,age_limit,age_relaxation,
+        fee,selection_process,salary,application_start,last_date,exam_date,
+        how_to_apply,important_dates,official_url,apply_url,notification_url,
+        source_url,source_name,source_id,source_hash,canonical_url,status,
+        verification_status,confidence_score,evidence_json,last_verified_at,
+        last_seen_at,published_at,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+    `).bind(
+      slug,
+      'admin:'+slug,
+      data.type,
+      data.title,
+      data.organization,
+      data.category,
+      data.location,
+      data.description,
+      data.eligibility,
+      data.qualification,
+      data.vacancies,
+      data.age_limit,
+      data.age_relaxation,
+      data.fee,
+      data.selection_process,
+      data.salary,
+      data.application_start,
+      data.last_date,
+      data.exam_date,
+      data.how_to_apply,
+      data.important_dates,
+      data.official_url,
+      data.apply_url,
+      data.notification_url,
+      data.official_url,
+      'Admin Manual',
+      null,
+      null,
+      data.canonical_url,
+      status,
+      verificationStatus,
+      body.publish === true ? 100 : 0,
+      JSON.stringify({
+        origin:'admin_manual',
+        created_by_admin_id:admin.id,
+        public_firewall:'url_safety_checked'
+      }),
+      body.publish === true ? nowIso() : null,
+      nowIso(),
+      publishedAt
+    ).run();
+
+    const id = Number(result.meta?.last_row_id || 0);
+    if (!id) {
+      return json({ ok:false, error:'Job could not be created' }, 500);
+    }
+
+    await audit(env, admin.id, 'create_item', 'item', id, {
+      status,
+      title:data.title
+    });
+
+    return json({ ok:true, id, status, slug });
+  }
+
+  /*
     Manual item verification
   */
   if (
