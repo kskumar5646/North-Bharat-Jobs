@@ -438,7 +438,7 @@ function extractLinksForAnalyzer(html, baseUrl) {
   const links = [];
   const re = /<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let m;
-  while ((m = re.exec(String(html || ''))) {
+  while ((m = re.exec(String(html || ''))) ) {
     try {
       const href = new URL(m[1], baseUrl).toString();
       if (!/^https?:$/i.test(new URL(href).protocol)) continue;
