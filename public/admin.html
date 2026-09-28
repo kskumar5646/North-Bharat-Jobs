@@ -180,6 +180,7 @@ function createItem(){
 <div class="editor">`+
     fields.map(([k,l])=>'<label>'+esc(l)+(k==='description'||k==='eligibility'||k==='qualification'||k==='selection_process'||k==='how_to_apply'||k==='important_dates'?'<textarea id="f_'+k+'">'+esc(blank[k])+'</textarea>':'<input id="f_'+k+'" value="'+esc(blank[k])+'">')+'</label>').join('')+
 `</div><div class="actions"><button class="primary" onclick="saveNewJob(false)">Save for Verification</button><button onclick="saveNewJob(true)">Create & Publish</button><button onclick="load('verification')">Cancel</button></div>`;
+}
 async function saveNewJob(publish){
   const body={publish};
   fields.forEach(([k])=>{body[k]=document.getElementById('f_'+k).value});
