@@ -1261,30 +1261,30 @@ async function adminApi(
 
     if (!data.canonical_url) data.canonical_url = data.official_url;
 
+    /*
+      Do not treat a generic official/careers page or a repeated title as
+      a duplicate by itself. One organization can legitimately have many
+      recruitments pointing to the same careers page, and separate editions
+      can reuse similar titles. The stable notification PDF URL is the
+      strongest manual-create identity.
+    */
     const duplicate = await env.DB.prepare(`
-      SELECT id,title,status
+      SELECT id,title,status,notification_url,canonical_url
       FROM items
-      WHERE
-        (canonical_url IS NOT NULL AND canonical_url=?)
-        OR (notification_url IS NOT NULL AND notification_url=?)
-        OR (
-          lower(trim(title))=lower(trim(?))
-          AND lower(trim(COALESCE(organization,'')))=lower(trim(?))
-        )
+      WHERE notification_url IS NOT NULL
+        AND trim(notification_url) <> ''
+        AND notification_url=?
       ORDER BY id DESC
       LIMIT 1
-    `).bind(
-      data.canonical_url,
-      data.notification_url,
-      data.title,
-      data.organization
-    ).first();
+    `).bind(data.notification_url).first();
 
     if (duplicate) {
       return json({
         ok:false,
-        error:'A matching job already exists (#'+duplicate.id+'): '+duplicate.title,
-        duplicate_id:duplicate.id
+        error:'This exact Notification PDF is already registered as job #'+duplicate.id+': '+duplicate.title,
+        duplicate_id:duplicate.id,
+        duplicate_reason:'notification_url',
+        existing_notification_url:duplicate.notification_url
       }, 409);
     }
 
