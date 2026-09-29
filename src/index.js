@@ -1259,6 +1259,20 @@ async function adminApi(
       }
     }
 
+    try {
+      const officialHost = new URL(data.official_url).hostname.toLowerCase().replace(/^www\\./,'');
+      const notificationHost = new URL(data.notification_url).hostname.toLowerCase().replace(/^www\\./,'');
+      if (officialHost !== notificationHost) {
+        return json({
+          ok:false,
+          error:'Notification PDF is from '+notificationHost+', but the Official Website is '+officialHost+'. Please replace it with the correct notification PDF for this job.',
+          code:'notification_domain_mismatch'
+        },400);
+      }
+    } catch {
+      return json({ok:false,error:'Invalid Official Website or Notification PDF URL.'},400);
+    }
+
     if (!data.canonical_url) data.canonical_url = data.official_url;
 
     /*
