@@ -353,7 +353,7 @@ async function publicList(env,url) {
   const page=Number.isFinite(requestedPage)?Math.max(1,Math.floor(requestedPage)):1;
   const limit=Number.isFinite(requestedLimit)?Math.min(30,Math.max(1,Math.floor(requestedLimit))):15;
   const offset=(page-1)*limit;
-  const where=[`status='published'`,`published_at IS NOT NULL`,`published_at >= datetime('now','-365 day')`];
+  const where=[`status='published'`,`published_at IS NOT NULL`,`datetime(published_at) >= datetime('now','-365 day')`];
   const args=[];
   if(type&&PUBLIC_TYPES.includes(type)){where.push('type=?');args.push(type);}
   if(q){
@@ -367,7 +367,7 @@ async function publicList(env,url) {
            exam_date,how_to_apply,important_dates,official_url,apply_url,notification_url,
            published_at,updated_at
     FROM items WHERE ${where.join(' AND ')}
-    ORDER BY published_at DESC,id DESC LIMIT ? OFFSET ?
+    ORDER BY datetime(published_at) DESC,id DESC LIMIT ? OFFSET ?
   `).bind(...args,limit,offset).all()).results||[];
   const items=rows.map(row=>({
     ...row,
@@ -388,7 +388,7 @@ async function publicItem(env,slug) {
            exam_date,how_to_apply,important_dates,official_url,apply_url,notification_url,published_at,updated_at
     FROM items
     WHERE slug=? AND status='published' AND published_at IS NOT NULL
-      AND published_at >= datetime('now','-365 day')
+      AND datetime(published_at) >= datetime('now','-365 day')
   `).bind(slug).first();
   if(!item) return json({ok:false,error:'Not found'},404);
   item.official_url=publicSafeUrl(item.official_url);
