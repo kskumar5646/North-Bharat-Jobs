@@ -355,7 +355,7 @@ async function publicList(env,url) {
   const offset=(page-1)*limit;
   const where=[`status='published'`,`published_at IS NOT NULL`,`datetime(published_at) >= datetime('now','-365 day')`];
   const args=[];
-  if(type&&PUBLIC_TYPES.includes(type)){where.push('type=?');args.push(type);}
+  if(type&&PUBLIC_TYPES.includes(type)){where.push('lower(type)=?');args.push(type.toLowerCase());}
   if(q){
     const search='%'+q+'%';
     where.push('(title LIKE ? OR organization LIKE ? OR qualification LIKE ? OR category LIKE ?)');
@@ -1237,8 +1237,34 @@ async function adminApi(
       return json({ ok:false, error:'Title cannot be empty' }, 400);
     }
 
-    if (!data.type) data.type = 'job';
-    if (!data.category) data.category = 'Latest Jobs';
+    // Normalize public type/category values so Admin-created jobs
+    // are visible to the same homepage/category queries as monitor-created jobs.
+    data.type = String(data.type || 'job').trim().toLowerCase();
+    const typeAliases = {
+      'jobs':'job',
+      'recruitments':'recruitment',
+      'admit card':'admit_card',
+      'admit cards':'admit_card',
+      'result':'result',
+      'results':'result',
+      'answer key':'answer_key',
+      'answer keys':'answer_key',
+      'syllabus':'syllabus',
+      'admission':'admission',
+      'scholarship':'scholarship',
+      'update':'update'
+    };
+    if (typeAliases[data.type]) data.type = typeAliases[data.type];
+    if (!PUBLIC_TYPES.includes(data.type)) data.type = 'job';
+
+    const categoryAliases = {
+      'job':'Latest Jobs',
+      'jobs':'Latest Jobs',
+      'latest job':'Latest Jobs',
+      'latest jobs':'Latest Jobs'
+    };
+    const rawCategory = String(data.category || '').trim();
+    data.category = categoryAliases[rawCategory.toLowerCase()] || rawCategory || 'Latest Jobs';
 
     if (!data.official_url) {
       return json({ ok:false, error:'Official Website URL is required' }, 400);
